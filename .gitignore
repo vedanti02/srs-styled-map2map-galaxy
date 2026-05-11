@@ -57,8 +57,12 @@ inference/transformed/
 !runs/baseline/plots/
 !runs/baseline/plots/**
 
-# Data (lives outside the repo on shared storage)
-data/
+# Data caches/cubes under data/ (actual sim data lives on shared storage).
+# We DO track Python loader modules in data/ — they're source code.
+data/__pycache__/
+data/**/*.npy
+data/**/*.npz
+data/**/*.h5
 
 # SLURM
 slurm-*.out

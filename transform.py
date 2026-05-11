@@ -26,6 +26,9 @@ def parse_args():
                         "Default True so Pk on transform.py outputs is comparable to Pk on stitched/.")
     p.add_argument("--save-dtype", default="float32", choices=["float16", "float32"],
                    help="float16 halves disk usage with negligible Pk error. Default float32 for safety.")
+    p.add_argument("--eval-z", type=float, default=0.0,
+                   help="Only used if the ckpt was trained with style_size=6 (z-aug). "
+                        "Inference is done with this redshift in the 6th theta slot.")
     return p.parse_args()
 
 
@@ -49,13 +52,31 @@ def main():
     chan_base = saved.get("chan_base_g", 256)
     num_blocks = saved.get("num_blocks", 4)
 
-    G = G_correct(in_chan=6, out_chan=6, style_size=5,
+    # Detect style_size from the saved state dict — robust to whether the trainer
+    # recorded it in args. ConvStyled3d's style_block.0 is nn.Linear(style_size, in_chan)
+    # so its weight has shape (in_chan, style_size).
+    sd = ckpt["model"]
+    style_size = 5
+    for k, v in sd.items():
+        if k.endswith("style_block.0.weight"):
+            style_size = int(v.shape[1])
+            break
+
+    G = G_correct(in_chan=6, out_chan=6, style_size=style_size,
                   chan_base=chan_base, num_blocks=num_blocks).to(device)
-    G.load_state_dict(ckpt["model"])
+    G.load_state_dict(sd)
     G.eval()
 
-    ds = PairDataset(args.data_root, split=args.split, seed=saved.get("seed", 0))
-    print(f"loaded {len(ds)} sims for split={args.split}; n_noise_samples={args.n_noise_samples}")
+    if style_size == 6:
+        from data.pair_dataset_zaug import PairDatasetZAug
+        ds = PairDatasetZAug(args.data_root, split=args.split,
+                             seed=saved.get("seed", 0), fixed_z=args.eval_z)
+        print(f"loaded {len(ds)} sims for split={args.split}; "
+              f"style_size=6 z-aug @ fixed_z={args.eval_z}; n_noise_samples={args.n_noise_samples}")
+    else:
+        ds = PairDataset(args.data_root, split=args.split, seed=saved.get("seed", 0))
+        print(f"loaded {len(ds)} sims for split={args.split}; "
+              f"style_size=5; n_noise_samples={args.n_noise_samples}")
 
     with torch.no_grad():
         for idx in range(len(ds)):
