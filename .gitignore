@@ -47,11 +47,15 @@ inference/transformed/
 **/metrics_*.npz
 **/posterior_*.pkl
 
-# Plots (regenerable)
+# Plots (regenerable) — but keep the baseline plots referenced from SUMMARY.md
 **/plots/
 *.png
 *.pdf
 *.svg
+!runs/
+!runs/baseline/
+!runs/baseline/plots/
+!runs/baseline/plots/**
 
 # Data (lives outside the repo on shared storage)
 data/
