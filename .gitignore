@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Training artifacts (large; reproducible from code + data)
+checkpoints/
+runs/
+sbi-logs/
+logs/
+*.pt
+*.pth
+*.ckpt
+
+# Inference outputs (regenerable; can be huge)
+inference/output/
+inference/transformed/
+**/transformed/
+**/transformed_*/
+
+# Pk arrays and metrics (regenerable)
+**/pk/
+**/metrics_*.npz
+**/posterior_*.pkl
+
+# Plots (regenerable)
+**/plots/
+*.png
+*.pdf
+*.svg
+
+# Data (lives outside the repo on shared storage)
+data/
+
+# SLURM
+slurm-*.out
+*.err
+*.log
+
+# Local scratch
+scratch/
+tmp/
+*.tmp
