@@ -92,8 +92,22 @@ been used to verify the data pipeline. We treat **LR (no SR at all)** as the
   the gradient toward cosmologically-relevant low-k modes.
 - Pk weight cranked to 10 (v2 had 2). Pure Pk emphasis test.
 - **Warm-started from v2/best.pt**, trained 60 more epochs.
-- Final `val_pkRMS_log10 = 0.2088` — **best of any version** (v2 had 0.2125).
-- Posterior eval was running on the cluster when this summary was written.
+- Best at epoch 27; `val_pkRMS_log10 = 0.2088` — **best of any version**
+  (v2 had 0.2125).
+- **Posterior eval (final):**
+  - KL(p₀ Ω_m) = 0.168 vs v2 0.144 — **v2 wins**
+  - KL(p₁ Ω_b) = 0.0095 vs v2 0.0072 — v2 wins
+  - KL(p₂ h)   = 0.0094 vs v2 0.0079 — v2 wins
+  - KL(p₃ n_s) = 0.0287 vs v2 0.032 — **v3 wins (only one)**
+  - KL(p₄ σ_8) = 0.166 vs v2 0.152 — v2 wins
+- Bias was actually slightly *better* for v3 on Ω_m and σ_8, but the NDE
+  posterior is **tighter than HR** on Ω_m (σ_SR=0.046 vs σ_HR=0.051), which
+  blows up the KL. Multi-scale + low-k-weighted Pk loss reduces the *variance*
+  of `log Pk(SR)` across cosmologies, making the NDE over-confident.
+- **Take-away:** improving `val_pkRMS_log10` does **not** automatically improve
+  downstream KL when the Pk variance across sims shrinks. v3 illustrates a
+  metric/loss vs downstream-objective mismatch: the population-mean Pk match
+  got better, but the *per-sim discriminability* of Pk got worse.
 
 ### v4 — pure supervised, **no GAN** (`10·L1·w + 10·Pk-MSE`)
 **Differences from v2:** discriminator removed entirely. Same loss schedule
@@ -120,25 +134,28 @@ adversarial term is contributing anything beyond what L1+Pk alone produces.
 
 ### KL(q_HR ‖ q_X) — per parameter, lower is better
 
-| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v4 (no-GAN) |
-|------------|------------:|-------------:|-------------:|------------:|
-| Ω_m  (p0)  |          63 |         27.9 |    **0.144** |       0.168 |
-| Ω_b  (p1)  |        75.8 |         0.95 |   **0.0072** |      0.0078 |
-| h    (p2)  |        0.12 |         0.27 |   **0.0079** |      0.0116 |
-| n_s  (p3)  |       4 900 |         44.3 |    **0.032** |       0.051 |
-| σ_8  (p4)  |         258 |         0.59 |        0.152 |   **0.145** |
+| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v3 (multi-scale) | v4 (no-GAN) |
+|------------|------------:|-------------:|-------------:|-----------------:|------------:|
+| Ω_m  (p0)  |          63 |         27.9 |    **0.144** |            0.168 |       0.168 |
+| Ω_b  (p1)  |        75.8 |         0.95 |   **0.0072** |           0.0095 |      0.0078 |
+| h    (p2)  |        0.12 |         0.27 |   **0.0079** |           0.0094 |      0.0116 |
+| n_s  (p3)  |       4 900 |         44.3 |        0.032 |        **0.029** |       0.051 |
+| σ_8  (p4)  |         258 |         0.59 |        0.152 |            0.166 |   **0.145** |
 
 ### Bias |μ_SR − θ_true| (HR reference column for context)
 
-| Param | HR ref | LR | v1 | v2 | v4 |
-|---|---:|---:|---:|---:|---:|
-| Ω_m | 0.041 | 0.113 | 0.128 | **0.041** | 0.039 |
-| Ω_b | 0.010 | 0.021 | 0.012 | **0.010** | 0.010 |
-| h   | 0.101 | 0.109 | 0.121 | 0.102 | **0.101** |
-| n_s | 0.090 | 0.235 | 0.241 | **0.091** | 0.092 |
-| σ_8 | 0.073 | 0.266 | 0.096 | **0.063** | 0.094 |
+| Param | HR ref | LR | v1 | v2 | v3 | v4 |
+|---|---:|---:|---:|---:|---:|---:|
+| Ω_m | 0.041 | 0.113 | 0.128 | 0.041 | **0.037** | 0.039 |
+| Ω_b | 0.010 | 0.021 | 0.012 | 0.010 | **0.010** | 0.010 |
+| h   | 0.101 | 0.109 | 0.121 | 0.102 | 0.101 | **0.101** |
+| n_s | 0.090 | 0.235 | 0.241 | 0.091 | **0.090** | 0.092 |
+| σ_8 | 0.073 | 0.266 | 0.096 | 0.063 | **0.060** | 0.094 |
 
-**v2's μ matches HR within rounding on every parameter, and beats HR on σ_8.**
+**v2 remains best on overall KL** (4/5 parameters). v3 has the lowest *mean
+bias* on Ω_m, n_s and σ_8 but loses on KL because its NDE posterior is tighter
+than HR on Ω_m / σ_8 — a textbook over-confidence regression caused by the
+low-k-weighted Pk loss compressing the per-sim variability of log Pk(SR).
 
 ---
 
