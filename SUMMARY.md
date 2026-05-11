@@ -144,25 +144,50 @@ adversarial term is contributing anything beyond what L1+Pk alone produces.
 
 ## Plot interpretation
 
-### `runs/baseline/plots/kl_comparison.png`
-Log-scale bar chart of mean KL per parameter for `LR / v1 / v2_e10 / v2_e40 /
-v4_e56`. Reading left-to-right within each parameter group makes the
-"training trajectory" visible — every version cuts KL by 1–3 orders of
-magnitude over the previous. **n_s is the most dramatic** (4 900 → 0.03,
-150 000×).
+### KL comparison — mean KL per parameter (log scale)
 
-### `runs/baseline/plots/bias_comparison.png`
-Bias |μ − θ_true| per parameter, with the **HR reference** as the black bar.
-For v2/v4 the bars sit on top of HR — the SR posterior is no longer biased
-relative to HR. v1's bars on Ω_m and n_s are still noticeably above HR.
+![KL comparison](runs/baseline/plots/kl_comparison.png)
 
-### `runs/baseline/plots/pk_ratio.png`
-Mean ⟨P(k)_SR / P(k)_HR⟩ vs k for each variant. v1 sits at ratio ≈ 0.85–0.90
-across most k bins (uniform power suppression). v2 and v4 sit near 1.0 over the
-range of k that the NDE consumes, confirming the Pk loss is doing its job at
-the population level.
+[`runs/baseline/plots/kl_comparison.png`](runs/baseline/plots/kl_comparison.png) — bar chart of mean KL per parameter
+for `LR / v1 / v2_e10 / v2_e40 / v4_e56`. Reading left-to-right within each
+parameter group makes the "training trajectory" visible — every version cuts
+KL by 1–3 orders of magnitude over the previous. **n_s is the most dramatic**
+(4 900 → 0.03, 150 000×).
 
-### Diagnostic per-model panels (`runs/baseline/plots/diagnostic_<tag>/`)
+### Bias |μ_SR − θ_true| per parameter
+
+![Bias comparison](runs/baseline/plots/bias_comparison.png)
+
+[`runs/baseline/plots/bias_comparison.png`](runs/baseline/plots/bias_comparison.png) — bias per parameter, with the
+**HR reference** as the black bar. For v2/v4 the bars sit on top of HR — the
+SR posterior is no longer biased relative to HR. v1's bars on Ω_m and n_s are
+still noticeably above HR.
+
+### Mean Pk ratio ⟨P(k)_SR / P(k)_HR⟩
+
+![Pk ratio](runs/baseline/plots/pk_ratio.png)
+
+[`runs/baseline/plots/pk_ratio.png`](runs/baseline/plots/pk_ratio.png) — vs k for each variant. v1 sits at ratio
+≈ 0.85–0.90 across most k bins (uniform power suppression). v2 and v4 sit near
+1.0 over the range of k that the NDE consumes, confirming the Pk loss is doing
+its job at the population level.
+
+### Diagnostic per-model panels
+
+#### v2 (Pk loss + GAN) — Pk panel & projection
+
+![v2 Pk panel](runs/baseline/plots/diagnostic_v2_best/pk_panel_v2_best.png)
+![v2 projection set4](runs/baseline/plots/diagnostic_v2_best/projection_v2_best_set4.png)
+
+#### v3 (multi-scale Pk + GAN, warm-started from v2) — Pk panel & projection
+
+![v3 Pk panel](runs/baseline/plots/diagnostic_v3_best/pk_panel_v3_best.png)
+![v3 projection set4](runs/baseline/plots/diagnostic_v3_best/projection_v3_best_set4.png)
+
+#### v4 (no-GAN supervised) — Pk panel & projection
+
+![v4 Pk panel](runs/baseline/plots/diagnostic_v4_best/pk_panel_v4_best.png)
+![v4 projection set4](runs/baseline/plots/diagnostic_v4_best/projection_v4_best_set4.png)
 
 **`pk_panel_<tag>.png` — 3-panel Pk diagnostic over 20 held-out sims**
 
