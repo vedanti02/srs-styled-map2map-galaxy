@@ -209,7 +209,30 @@ decimals for every row).
 | n_s | 0.090 | 0.235 | 0.241 | 0.091 | 0.090 | 0.092 | **0.088** | 0.205 |
 | σ_8 | 0.073 | 0.266 | 0.096 | **0.063** | 0.060 | 0.093 | 0.077 | 0.119 |
 
+### Mixture-of-Gaussians ensemble across SR variants
+
+Combining the per-sim posteriors from v2+v3+v4+v5 as a Gaussian-approximated
+mixture (means averaged, variances widened by both within-variant variance
+and between-variant disagreement) gives:
+
+| Param | best single | ensemble (v2+v3+v4+v5) | gain |
+|-------|------------:|-----------------------:|-----:|
+| Ω_m   | 0.125 (v4)  |                  0.129 |  ~tie |
+| Ω_b   | 0.0054 (v5) |             **0.0046** |  +15 % |
+| h     | 0.0084 (v2) |             **0.0078** |  +7 %  |
+| n_s   | 0.0293 (v3) |              **0.026** |  +10 % |
+| σ_8   | 0.126 (v5)  |             **0.0779** |  +38 % |
+
+The ensemble is reproducible by simple posterior averaging — no extra
+training, no extra GPU time. It works because each variant fits a slightly
+different slice of the Pk → θ mapping (Ω_m vs σ_8 trade-off), and the
+mixture widens σ_SR to better match σ_HR exactly where individual variants
+were over-confident. Use `analysis/ensemble_posterior.py` to reproduce.
+
 ### Headline observations
+- **Mixture-of-Gaussians ensemble across v2+v3+v4+v5 is the new SOTA on 4 of
+  5 parameters.** It only ~ties v4 on Ω_m, and beats every single model on
+  Ω_b, h, n_s and σ_8 — most dramatically on σ_8 (0.078 vs 0.126).
 - **No single SOTA across all 5 parameters.** v2 → h; v3 → n_s; v4 → Ω_m;
   v5 → Ω_b and σ_8. v2 is the most balanced (no per-param win, but never the
   worst either — within 30 % of the best on every parameter).
@@ -328,7 +351,12 @@ its job at the population level.
 
 ## Key takeaways
 
-1. **No single dominant model — pick by which cosmological parameter matters
+1. **The strongest single result is a free post-hoc mixture-of-Gaussians
+   ensemble across v2+v3+v4+v5.** It beats every single model on Ω_b, h, n_s
+   and σ_8 (σ_8 KL 0.078 vs single-best 0.126) and only ~ties v4 on Ω_m. No
+   extra training, no GPU. Just average per-sim posterior means and combine
+   variances. Reproducible via `analysis/ensemble_posterior.py`.
+2. **No single dominant model — pick by which cosmological parameter matters
    most for the downstream science.**
    - **Ω_m → v4** (no-GAN, single-scale Pk). KL = 0.125.
    - **Ω_b → v5** (no-GAN, multi-scale Pk + low-k weight). KL = 0.0054.
