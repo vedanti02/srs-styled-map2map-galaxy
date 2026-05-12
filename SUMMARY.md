@@ -296,6 +296,16 @@ its job at the population level.
 ![v4 Pk panel](runs/baseline/plots/diagnostic_v4_best/pk_panel_v4_best.png)
 ![v4 projection set4](runs/baseline/plots/diagnostic_v4_best/projection_v4_best_set4.png)
 
+#### v5 (no-GAN, multi-scale Pk + low-k weight) — Pk panel & projection
+
+![v5 Pk panel](runs/baseline/plots/diagnostic_v5_best/pk_panel_v5_best.png)
+![v5 projection set4](runs/baseline/plots/diagnostic_v5_best/projection_v5_best_set4.png)
+
+#### v6 (z-augmented, evaluated at z=0) — Pk panel & projection
+
+![v6 Pk panel](runs/baseline/plots/diagnostic_v6_best/pk_panel_v6_best.png)
+![v6 projection set4](runs/baseline/plots/diagnostic_v6_best/projection_v6_best_set4.png)
+
 **`pk_panel_<tag>.png` — 3-panel Pk diagnostic over 20 held-out sims**
 
 - **Top panel — P(k):** Truth (red) vs Pred-median (blue, with 16/84%

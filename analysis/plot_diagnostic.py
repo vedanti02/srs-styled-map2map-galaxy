@@ -159,12 +159,22 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
-    G = G_correct(in_chan=6, out_chan=6, style_size=5, chan_base=256, num_blocks=4).to(device)
-    G.load_state_dict(ck["model"])
+    sd = ck["model"]
+    style_size = 5
+    for k, v in sd.items():
+        if k.endswith("style_block.0.weight"):
+            style_size = int(v.shape[1])
+            break
+    G = G_correct(in_chan=6, out_chan=6, style_size=style_size, chan_base=256, num_blocks=4).to(device)
+    G.load_state_dict(sd)
     G.eval()
-    print(f"loaded {args.ckpt} (epoch {ck.get('epoch', '?')}) on {device}", flush=True)
+    print(f"loaded {args.ckpt} (epoch {ck.get('epoch', '?')}) style_size={style_size} on {device}", flush=True)
 
-    ds = PairDataset(args.data_root, split="val", seed=0)
+    if style_size == 6:
+        from data.pair_dataset_zaug import PairDatasetZAug
+        ds = PairDatasetZAug(args.data_root, split="val", seed=0, fixed_z=0.0)
+    else:
+        ds = PairDataset(args.data_root, split="val", seed=0)
     N = 64
     lbox = args.lbox
     k_nyq = np.pi * N / lbox
