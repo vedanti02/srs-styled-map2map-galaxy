@@ -113,19 +113,50 @@ been used to verify the data pipeline. We treat **LR (no SR at all)** as the
 **Differences from v4:** v4's losses plus v3's multi-scale Pk (full + sigma=2
 smoothed) with low-k bin weighting. Tests whether v3's loss innovations carry
 over without the GAN.
-- 60 epochs, best.pt = epoch ~58, `val_pkRMS_log10 ≈ 0.2174` — between v4
+- 60 epochs, best.pt = epoch ~58, `val_pkRMS_log10 = 0.2174` — between v4
   (0.2145) and v3 (0.2088).
-- **Posterior eval:**
-  - KL(Ω_m) = 0.214 — **worst of any SR variant.** Same over-confidence
-    failure mode as v3 on Ω_m: σ_SR=0.048 vs σ_HR=0.050, but mean shift
-    |μ_HR−μ_SR|=0.010 inflates the Gaussian-KL.
-  - KL(Ω_b) = 0.006 — **best of any variant.**
-  - KL(σ_8) = 0.127 — **best of any variant** (beats v4's 0.145, v2's 0.152).
-  - KL(n_s) = 0.040 — between v2 (0.032) and v4 (0.051).
-- **Take-away:** the multi-scale + low-k weighted Pk loss isn't a universal
-  improvement — it's a *cosmological-mode reallocator*. v5 trades Ω_m accuracy
-  for σ_8 accuracy. If σ_8 is the priority, v5 is the best variant trained so
-  far. If you want the best balanced posterior, **v2 is still SOTA.**
+- **Posterior eval (seed=0):**
+  - KL(Ω_m) = 0.158 — between v2 (0.137) and v3 (0.169). Not a regression.
+  - KL(Ω_b) = 0.0054 — **best of any variant.**
+  - KL(σ_8) = 0.126 — **best of any variant** (beats v2's 0.150).
+  - KL(n_s) = 0.041 — between v2 (0.032) and v4 (0.051).
+- **Take-away:** v5 takes the σ_8 and Ω_b crowns. v2 still leads aggregate
+  balance, but if σ_8 / Ω_b are the priority parameters for the downstream
+  science, **v5 is the new strongest variant on those**. The multi-scale +
+  low-k weighted Pk loss reallocates cosmological information toward broad-
+  band amplitude (σ_8) and baryon fraction (Ω_b).
+
+### v6 — pure supervised + v5's loss + **synthetic linear-growth z augmentation** (style_size=6)
+**Differences from v5:**
+- 6-D θ = `(Ω_m, Ω_b, h, n_s, σ_8, z)`. Per-sample `z ~ U[0, 1.5]` drawn each
+  iteration; disp scaled by `D(z, Ω_m)/D(0, Ω_m)`, vel by `D·H·f/(1+z)` ratio
+  via [map2map/norms/cosmology.py](map2map/norms/cosmology.py). LR and HR
+  receive the same scaling so the SR task is preserved at scaled amplitude.
+- Validation pinned at `z=0` for direct comparability to v5.
+- 60 epochs, best.pt = epoch ~58, `val_pkRMS_log10 = 0.2179` at z=0 — looks
+  perfectly normal, on par with v5's 0.2174.
+- **Posterior eval at z=0 (seed=0): catastrophic.**
+  - KL(Ω_m) = 6.6, KL(n_s) = 27.4, KL(σ_8) = 1.28.
+  - SR posterior collapses to a narrow band offset from HR:
+    σ_SR_Ω_m = 0.029 (vs HR 0.051), σ_SR_n_s = 0.036 (vs HR 0.105). Means
+    are also shifted: |μ_HR − μ_SR|_n_s = 0.21.
+- **Diagnosis:** the model has learned to encode `z` in the displacement
+  amplitude through linear theory. When the loss only sees a single snapshot
+  on the LR side, the network can satisfy `D(z)`-scaled HR targets by mostly
+  re-routing global amplitude through the 6th style component, *without
+  preserving HR's per-sim cosmology signature*. At z=0 inference time, the
+  Pk(SR) is close to Pk(HR) in mean and variance (`val_pkRMS` is fine), but
+  the per-sim Pk(SR) → θ mapping the NDE learns is different from HR's →
+  the q_SR posterior diverges hard from q_HR.
+- **Caveat (the data, not the recipe):** with only `PART_009` on disk, the
+  linear-growth z augmentation has to lie about the small-scale structure
+  at z ≠ 0 — at high k, real Quijote sims at z=0.5 don't have HR(z=0) ·
+  D(0.5)/D(0) Pk. v6 confirms that this synthetic z signal is too damaging
+  for the task. Genuine z-conditioning needs real multi-snapshot data.
+- **Take-away:** plumbing the z dimension is technically working (model
+  trains, val_pkRMS at z=0 looks fine), but the *downstream cosmology
+  posterior* is destroyed. Do not deploy v6. Re-run only when real multi-z
+  data is available.
 
 ### v4 — pure supervised, **no GAN** (`10·L1·w + 10·Pk-MSE`)
 **Differences from v2:** discriminator removed entirely. Same loss schedule
@@ -150,32 +181,48 @@ adversarial term is contributing anything beyond what L1+Pk alone produces.
 
 ## Headline comparison
 
-### KL(q_HR ‖ q_X) — per parameter, lower is better
+### KL(q_HR ‖ q_X) — per parameter, lower is better (all eval'd with seed=0)
 
-| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v3 (multi-scale GAN) | v4 (no-GAN) | v5 (no-GAN multi-scale) |
-|------------|------------:|-------------:|-------------:|---------------------:|------------:|------------------------:|
-| Ω_m  (p0)  |          63 |         27.9 |    **0.144** |                0.168 |       0.168 |                   0.214 |
-| Ω_b  (p1)  |        75.8 |         0.95 |       0.0072 |               0.0095 |      0.0078 |              **0.0060** |
-| h    (p2)  |        0.12 |         0.27 |   **0.0079** |               0.0094 |      0.0116 |                  0.0124 |
-| n_s  (p3)  |       4 900 |         44.3 |        0.032 |            **0.029** |       0.051 |                   0.040 |
-| σ_8  (p4)  |         258 |         0.59 |        0.152 |                0.166 |       0.145 |               **0.127** |
+| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v3 (multi-scale GAN) | v4 (no-GAN) | v5 (no-GAN multi-scale) | v6 (z-aug)  |
+|------------|------------:|-------------:|-------------:|---------------------:|------------:|------------------------:|------------:|
+| Ω_m  (p0)  |          63 |         26.1 |        0.137 |                0.169 |   **0.125** |                   0.158 |        6.60 |
+| Ω_b  (p1)  |        75.8 |         0.95 |       0.0071 |                0.010 |      0.0076 |              **0.0054** |        0.16 |
+| h    (p2)  |        0.12 |         0.27 |   **0.0084** |                0.010 |       0.011 |                  0.0122 |        0.19 |
+| n_s  (p3)  |       4 900 |         43.1 |        0.032 |            **0.029** |       0.051 |                   0.041 |       27.43 |
+| σ_8  (p4)  |         258 |         0.58 |        0.150 |                0.165 |       0.143 |               **0.126** |        1.28 |
 
-### Bias |μ_SR − θ_true| (HR reference column for context)
+**Note on reproducibility (fixed 2026-05-11):** `evaluate.py` previously did
+not seed `torch`/`numpy` before sampling 2000 posterior draws per simulation,
+which left HR-side per-sim means / stds drifting between eval runs by enough
+to shift mean KL on parameters like Ω_m by ~30 %. All numbers in this table
+were produced with `--seed 0`, which yields bit-identical HR per-sim
+posteriors across versions (confirmed: `HR bias |μ−θ|` is identical to 4
+decimals for every row).
 
-| Param | HR ref | LR | v1 | v2 | v3 | v4 | v5 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Ω_m | 0.041 | 0.113 | 0.128 | 0.041 | **0.037** | 0.039 | 0.039 |
-| Ω_b | 0.010 | 0.021 | 0.012 | 0.010 | **0.010** | 0.010 | 0.010 |
-| h   | 0.101 | 0.109 | 0.121 | 0.102 | 0.101 | **0.101** | 0.101 |
-| n_s | 0.090 | 0.235 | 0.241 | 0.091 | 0.090 | 0.092 | **0.088** |
-| σ_8 | 0.073 | 0.266 | 0.096 | 0.063 | **0.060** | 0.094 | 0.078 |
+### Bias |μ_SR − θ_true| (HR reference column for context, seed=0)
 
-**v2 still leads on aggregate KL** (3/5 parameters). v5 takes the σ_8 and Ω_b
-crowns but pays a steep price on Ω_m (worst KL of any SR variant at 0.214).
-The "win one, lose one" pattern for v5 vs v2 suggests the multi-scale + low-k
-weighted Pk loss systematically biases which cosmological modes the SR field
-encodes well: the low-k tightening helps σ_8 (sensitive to broad-band power)
-but hurts Ω_m (sensitive to shape across k).
+| Param | HR ref | LR | v1 | v2 | v3 | v4 | v5 | v6 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Ω_m | 0.041 | 0.113 | 0.128 | 0.041 | **0.038** | 0.039 | 0.039 | 0.096 |
+| Ω_b | 0.010 | 0.021 | 0.012 | 0.010 | **0.010** | 0.010 | 0.010 | 0.010 |
+| h   | 0.101 | 0.109 | 0.122 | 0.102 | 0.101 | **0.100** | 0.102 | 0.105 |
+| n_s | 0.090 | 0.235 | 0.241 | 0.091 | 0.090 | 0.092 | **0.088** | 0.205 |
+| σ_8 | 0.073 | 0.266 | 0.096 | **0.063** | 0.060 | 0.093 | 0.077 | 0.119 |
+
+### Headline observations
+- **No single SOTA across all 5 parameters.** v2 → h; v3 → n_s; v4 → Ω_m;
+  v5 → Ω_b and σ_8. v2 is the most balanced (no per-param win, but never the
+  worst either — within 30 % of the best on every parameter).
+- **v6 (linear-growth z augmentation) is broken at z=0.** Even though its
+  `val_pkRMS_log10 = 0.218` at z=0 is comparable to v5's 0.217, the NDE
+  trained on Pk(SR_v6) is wildly biased relative to HR — KL on Ω_m is 6.6 and
+  on n_s is 27. The per-sim Pk(SR_v6) carries a systematic
+  cosmology-dependent distortion picked up during z-aug training that the
+  NDE happily latches onto. **`val_pkRMS_log10` does not capture this** — it
+  is a population-mean statistic, not a per-sim-discriminability one.
+- **The seed fix changed v4 from "Ω_m loser" to "Ω_m winner."** Prior
+  unseeded eval had v4's KL_Ω_m at 0.168; reproducible eval has it at 0.125.
+  Most of the v3-vs-v2 / v4-vs-v5 differences on Ω_m were within RNG drift.
 
 ---
 
@@ -281,26 +328,50 @@ its job at the population level.
 
 ## Key takeaways
 
-1. **v2 is the strongest model** as of 2026-05-11. It essentially recovers the
-   HR posterior across all 5 cosmological parameters from LR-quality inputs.
+1. **No single dominant model — pick by which cosmological parameter matters
+   most for the downstream science.**
+   - **Ω_m → v4** (no-GAN, single-scale Pk). KL = 0.125.
+   - **Ω_b → v5** (no-GAN, multi-scale Pk + low-k weight). KL = 0.0054.
+   - **h   → v2** (GAN + single-scale Pk). KL = 0.0084.
+   - **n_s → v3** (GAN + multi-scale Pk warm-started from v2). KL = 0.029.
+   - **σ_8 → v5**. KL = 0.126.
+   - **Most balanced single model: v2** — never wins, never the worst, within
+     30 % of best on every parameter.
 2. **Pk-MSE is the critical loss term.** Adding it on top of L1+adv took the
    posterior from "much better than LR but visibly biased" (v1) to
-   "indistinguishable from HR" (v2).
-3. **The discriminator helps only marginally.** v4 (pure supervised) ties v2
-   within noise; v2's GAN edge is small but consistent.
-4. **The remaining gap to HR is fundamental.** Cross-power r(k) → 0 at high k
-   means phase information beyond LR's resolution is irrecoverable; what the
-   model recovers is the *statistical* match, which is what the Pk-based NDE
-   needs.
-5. **v3 (multi-scale Pk + bin-weighting + λ_pk=10, warm-start from v2)** has
-   the best training metric (`val_pkRMS_log10 = 0.2088 vs 0.2125 for v2`).
-   Posterior eval is still running; report will be updated when it lands.
+   "indistinguishable from HR" (v2). All later variants are refinements.
+3. **The discriminator helps Ω_m a little; doesn't change σ_8 / Ω_b.** v4
+   (no-GAN, single-scale Pk) actually *beats* v2 on Ω_m by 0.012 KL — the
+   discriminator was slightly hurting that parameter all along, masked by
+   the unseeded-eval RNG drift in earlier reports.
+4. **Multi-scale + low-k-weighted Pk reallocates posterior tightness toward
+   broad-band amplitude.** v5 wins σ_8 and Ω_b but loses Ω_m vs v4. Same
+   loss with a GAN on top (v3) is roughly equivalent — the bin-weighting,
+   not the discriminator, is what shifts the trade-off.
+5. **The remaining gap to HR is fundamental.** Cross-power r(k) → 0 at high
+   k means phase information beyond LR's resolution is irrecoverable; what
+   the model recovers is the *statistical* match, which is what the
+   Pk-based NDE needs.
+6. **Synthetic linear-growth z augmentation (v6) is destructive at z=0.**
+   The model handles z=0 as well as v5 in `val_pkRMS`, but the per-sim
+   Pk(SR) → θ mapping the NDE learns is wildly off HR — KL on Ω_m and n_s
+   blows up by 1–3 orders of magnitude. Real multi-snapshot training data
+   is the only honest path to redshift conditioning.
+7. **`val_pkRMS_log10` is an imperfect proxy for KL.** v3 had the best
+   `val_pkRMS` (0.209 vs v2's 0.213) but lost to v2 on overall KL. v6 had
+   the same `val_pkRMS` as v5 but had catastrophically worse KL. Track the
+   per-sim Pk(SR) → θ discriminability, not just the population-mean log Pk
+   match.
+8. **Always seed the eval.** `evaluate.py` previously did not seed `torch`
+   before sampling 2000 draws from each NDE, leaving HR/SR per-sim KLs
+   drifting by 10–30 %. Fixed 2026-05-11; all numbers above are
+   reproducible with `--seed 0`.
 
 ---
 
 **Artifacts:**
-- Checkpoints: `checkpoints/{full,v2,v3,v4}/best.pt`
+- Checkpoints: `checkpoints/{v2,v3,v4,v5,v6}/best.pt`
 - Pk arrays per sim: `runs/baseline/pk/{hr,lr,sr_*}/`
-- Posterior metrics: `runs/baseline/metrics_*.npz`
+- Posterior metrics: `runs/baseline/metrics_*.npz` (all seed=0 reproducible)
 - Plots: `runs/baseline/plots/`
 - Detailed numerical report: `runs/baseline/FINAL_REPORT.md`

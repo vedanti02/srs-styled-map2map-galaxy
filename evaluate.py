@@ -68,7 +68,14 @@ def main():
     p.add_argument("--restrict-sids", default=None,
                    help="Path to a .npz with array 'val_sids' or 'test_sids' to restrict evaluation. "
                         "If omitted, intersect HR/SR sims and use all common ones.")
+    p.add_argument("--seed", type=int, default=0,
+                   help="Seed for posterior sampling so HR/SR per-sim posteriors are reproducible.")
     args = p.parse_args()
+
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
 
     q_hr = _load_posterior(args.posterior_hr)
     q_sr = _load_posterior(args.posterior_sr)
