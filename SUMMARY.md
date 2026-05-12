@@ -109,6 +109,24 @@ been used to verify the data pipeline. We treat **LR (no SR at all)** as the
   metric/loss vs downstream-objective mismatch: the population-mean Pk match
   got better, but the *per-sim discriminability* of Pk got worse.
 
+### v5 — pure supervised + v3's loss (`10·L1·w + 10·multi-scale-Pk-MSE`, low-k weight 3, no GAN)
+**Differences from v4:** v4's losses plus v3's multi-scale Pk (full + sigma=2
+smoothed) with low-k bin weighting. Tests whether v3's loss innovations carry
+over without the GAN.
+- 60 epochs, best.pt = epoch ~58, `val_pkRMS_log10 ≈ 0.2174` — between v4
+  (0.2145) and v3 (0.2088).
+- **Posterior eval:**
+  - KL(Ω_m) = 0.214 — **worst of any SR variant.** Same over-confidence
+    failure mode as v3 on Ω_m: σ_SR=0.048 vs σ_HR=0.050, but mean shift
+    |μ_HR−μ_SR|=0.010 inflates the Gaussian-KL.
+  - KL(Ω_b) = 0.006 — **best of any variant.**
+  - KL(σ_8) = 0.127 — **best of any variant** (beats v4's 0.145, v2's 0.152).
+  - KL(n_s) = 0.040 — between v2 (0.032) and v4 (0.051).
+- **Take-away:** the multi-scale + low-k weighted Pk loss isn't a universal
+  improvement — it's a *cosmological-mode reallocator*. v5 trades Ω_m accuracy
+  for σ_8 accuracy. If σ_8 is the priority, v5 is the best variant trained so
+  far. If you want the best balanced posterior, **v2 is still SOTA.**
+
 ### v4 — pure supervised, **no GAN** (`10·L1·w + 10·Pk-MSE`)
 **Differences from v2:** discriminator removed entirely. Same loss schedule
 minus the adversarial term and R1 grad penalty. Tests whether the GAN's
@@ -134,28 +152,30 @@ adversarial term is contributing anything beyond what L1+Pk alone produces.
 
 ### KL(q_HR ‖ q_X) — per parameter, lower is better
 
-| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v3 (multi-scale) | v4 (no-GAN) |
-|------------|------------:|-------------:|-------------:|-----------------:|------------:|
-| Ω_m  (p0)  |          63 |         27.9 |    **0.144** |            0.168 |       0.168 |
-| Ω_b  (p1)  |        75.8 |         0.95 |   **0.0072** |           0.0095 |      0.0078 |
-| h    (p2)  |        0.12 |         0.27 |   **0.0079** |           0.0094 |      0.0116 |
-| n_s  (p3)  |       4 900 |         44.3 |        0.032 |        **0.029** |       0.051 |
-| σ_8  (p4)  |         258 |         0.59 |        0.152 |            0.166 |   **0.145** |
+| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v3 (multi-scale GAN) | v4 (no-GAN) | v5 (no-GAN multi-scale) |
+|------------|------------:|-------------:|-------------:|---------------------:|------------:|------------------------:|
+| Ω_m  (p0)  |          63 |         27.9 |    **0.144** |                0.168 |       0.168 |                   0.214 |
+| Ω_b  (p1)  |        75.8 |         0.95 |       0.0072 |               0.0095 |      0.0078 |              **0.0060** |
+| h    (p2)  |        0.12 |         0.27 |   **0.0079** |               0.0094 |      0.0116 |                  0.0124 |
+| n_s  (p3)  |       4 900 |         44.3 |        0.032 |            **0.029** |       0.051 |                   0.040 |
+| σ_8  (p4)  |         258 |         0.59 |        0.152 |                0.166 |       0.145 |               **0.127** |
 
 ### Bias |μ_SR − θ_true| (HR reference column for context)
 
-| Param | HR ref | LR | v1 | v2 | v3 | v4 |
-|---|---:|---:|---:|---:|---:|---:|
-| Ω_m | 0.041 | 0.113 | 0.128 | 0.041 | **0.037** | 0.039 |
-| Ω_b | 0.010 | 0.021 | 0.012 | 0.010 | **0.010** | 0.010 |
-| h   | 0.101 | 0.109 | 0.121 | 0.102 | 0.101 | **0.101** |
-| n_s | 0.090 | 0.235 | 0.241 | 0.091 | **0.090** | 0.092 |
-| σ_8 | 0.073 | 0.266 | 0.096 | 0.063 | **0.060** | 0.094 |
+| Param | HR ref | LR | v1 | v2 | v3 | v4 | v5 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Ω_m | 0.041 | 0.113 | 0.128 | 0.041 | **0.037** | 0.039 | 0.039 |
+| Ω_b | 0.010 | 0.021 | 0.012 | 0.010 | **0.010** | 0.010 | 0.010 |
+| h   | 0.101 | 0.109 | 0.121 | 0.102 | 0.101 | **0.101** | 0.101 |
+| n_s | 0.090 | 0.235 | 0.241 | 0.091 | 0.090 | 0.092 | **0.088** |
+| σ_8 | 0.073 | 0.266 | 0.096 | 0.063 | **0.060** | 0.094 | 0.078 |
 
-**v2 remains best on overall KL** (4/5 parameters). v3 has the lowest *mean
-bias* on Ω_m, n_s and σ_8 but loses on KL because its NDE posterior is tighter
-than HR on Ω_m / σ_8 — a textbook over-confidence regression caused by the
-low-k-weighted Pk loss compressing the per-sim variability of log Pk(SR).
+**v2 still leads on aggregate KL** (3/5 parameters). v5 takes the σ_8 and Ω_b
+crowns but pays a steep price on Ω_m (worst KL of any SR variant at 0.214).
+The "win one, lose one" pattern for v5 vs v2 suggests the multi-scale + low-k
+weighted Pk loss systematically biases which cosmological modes the SR field
+encodes well: the low-k tightening helps σ_8 (sensitive to broad-band power)
+but hurts Ω_m (sensitive to shape across k).
 
 ---
 
