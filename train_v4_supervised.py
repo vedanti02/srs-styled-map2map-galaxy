@@ -40,6 +40,8 @@ def parse_args():
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--lbox", type=float, default=1000.0)
     p.add_argument("--n-pk-bins", type=int, default=32)
+    p.add_argument("--init-from", default="",
+                   help="Optional warm-start: load only G state_dict from this ckpt.")
     return p.parse_args()
 
 
@@ -65,6 +67,12 @@ def main():
 
     G = G_correct(in_chan=6, out_chan=6, style_size=5,
                   chan_base=args.chan_base_g, num_blocks=args.num_blocks).to(device)
+
+    if args.init_from:
+        ck = torch.load(args.init_from, map_location=device, weights_only=False)
+        sd = ck["model"] if "model" in ck else ck
+        G.load_state_dict(sd)
+        print(f"warm-started G from {args.init_from}", flush=True)
 
     opt = torch.optim.Adam(G.parameters(), lr=args.lr, betas=(args.beta1, args.beta2))
 
