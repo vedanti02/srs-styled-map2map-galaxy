@@ -20,7 +20,7 @@ def plot_kl(metrics, outpath):
     fig, ax = plt.subplots(figsize=(10, 5))
     x = np.arange(n_params)
     w = 0.16
-    colors = ["#999999", "#cc8855", "#88aacc", "#5588aa", "#117755"]
+    colors = ["#999999", "#cc8855", "#88aacc", "#5588aa", "#117755", "#cc66cc", "#bb8800"]
     for i, ver in enumerate(versions):
         ax.bar(x + (i - len(versions) / 2 + 0.5) * w, kl_arr[i], w,
                label=ver, color=colors[i % len(colors)])
@@ -46,7 +46,7 @@ def plot_bias(metrics, outpath):
         bias_arr[i + 1] = np.abs(metrics[k]["mu_sr"] - metrics[k]["theta_true"]).mean(0)
 
     labels = ["HR (ref)"] + versions
-    colors = ["k", "#999999", "#cc8855", "#88aacc", "#5588aa", "#117755"]
+    colors = ["k", "#999999", "#cc8855", "#88aacc", "#5588aa", "#117755", "#cc66cc", "#bb8800"]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     x = np.arange(n_params)
@@ -113,11 +113,14 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     metric_files = {
-        "LR":     "runs/baseline/metrics_hr_vs_lr.npz",
-        "v1_e31": "runs/baseline/metrics_v1_e31.npz",
-        "v2_e10": "runs/baseline/metrics_v2_e10.npz",
-        "v2_e40": "runs/baseline/metrics_v2_best.npz",
-        "v4_e56": "runs/baseline/metrics_v4_best.npz",
+        "LR":         "runs/baseline/metrics_hr_vs_lr.npz",
+        "v1_e31":     "runs/baseline/metrics_v1_e31.npz",
+        "v2_e40":     "runs/baseline/metrics_v2_best.npz",
+        "v3_best":    "runs/baseline/metrics_v3_best.npz",
+        "v4_e56":     "runs/baseline/metrics_v4_best.npz",
+        "v5_best":    "runs/baseline/metrics_v5_best.npz",
+        "v7_best":    "runs/baseline/metrics_v7_best.npz",
+        "ensemble":   "runs/baseline/metrics_ensemble_v2v3v4v5.npz",
     }
     metrics = {k: np.load(v) for k, v in metric_files.items() if os.path.exists(v)}
     plot_kl(metrics, os.path.join(args.out_dir, "kl_comparison.png"))
@@ -129,7 +132,11 @@ def main():
     pk_versions["LR"] = _load_pk_dir("runs/baseline/pk/lr", "quijotelike_")
     pk_versions["v1_e31"] = _load_pk_dir("runs/baseline/pk/sr_e31_v1full", "set")
     pk_versions["v2_e40"] = _load_pk_dir("runs/baseline/pk/sr_v2_best", "set")
+    if os.path.isdir("runs/baseline/pk/sr_v3_best"):
+        pk_versions["v3_best"] = _load_pk_dir("runs/baseline/pk/sr_v3_best", "set")
     pk_versions["v4_e56"] = _load_pk_dir("runs/baseline/pk/sr_v4_best", "set")
+    if os.path.isdir("runs/baseline/pk/sr_v5_best"):
+        pk_versions["v5_best"] = _load_pk_dir("runs/baseline/pk/sr_v5_best", "set")
     plot_pk_ratio(pk_versions, pk_hr, os.path.join(args.out_dir, "pk_ratio.png"))
 
 

@@ -126,6 +126,33 @@ over without the GAN.
   low-k weighted Pk loss reallocates cosmological information toward broad-
   band amplitude (σ_8) and baryon fraction (Ω_b).
 
+### v7 — v4's recipe **warm-started from v2's best.pt**
+**Motivation:** v4 (no-GAN, single-scale Pk) wins KL_Ω_m at 0.125. v3 showed
+warm-starting from v2 gives the lowest `val_pkRMS_log10` (0.2088). v7 tests
+whether combining the two — v4's pure-supervised loss + v2's pre-trained
+starting point — pushes Ω_m KL down further.
+
+- 60 epochs, best.pt = epoch ~58, `val_pkRMS_log10 = 0.2122` — beats v4
+  (0.2145), nudges past v2 (0.2125), still above v3 (0.2088).
+- **Posterior eval (seed=0): hurts on most parameters vs v4.**
+  - KL(Ω_m) = 0.176 vs v4 0.125 — **worse, opposite of the goal**.
+  - KL(Ω_b) = 0.0050 — beats v5 (0.0054) by a hair.
+  - KL(h)   = 0.019  — worst of all SR variants.
+  - KL(n_s) = 0.051 — tied with v4 worst.
+  - KL(σ_8) = 0.130 — between v5 and v4.
+- **Take-away (mirrors v3):** warm-starting a no-GAN training run from a
+  GAN-trained checkpoint dragged the model away from v4's good Ω_m optimum
+  and into a different local minimum that has slightly better `val_pkRMS` but
+  noticeably worse per-sim Pk-discriminability on shape-sensitive parameters
+  (Ω_m, h, n_s). **Better `val_pkRMS_log10` did NOT translate to better KL
+  for the third time** (after v3 and v6). The lesson now applies universally
+  — track per-sim Pk variance across cosmologies, not just population-mean
+  log-Pk match.
+- v7 also **does not help the ensemble**: adding it to v2+v3+v4+v5 raises
+  KL on Ω_m / h / n_s / σ_8 (only Ω_b marginally improves by 0.0006). v7's
+  predictions are too correlated with v2's (same warm start, similar
+  trajectory) to add diversity. **The SOTA ensemble remains v2+v3+v4+v5.**
+
 ### v6 — pure supervised + v5's loss + **synthetic linear-growth z augmentation** (style_size=6)
 **Differences from v5:**
 - 6-D θ = `(Ω_m, Ω_b, h, n_s, σ_8, z)`. Per-sample `z ~ U[0, 1.5]` drawn each
@@ -183,13 +210,13 @@ adversarial term is contributing anything beyond what L1+Pk alone produces.
 
 ### KL(q_HR ‖ q_X) — per parameter, lower is better (all eval'd with seed=0)
 
-| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v3 (multi-scale GAN) | v4 (no-GAN) | v5 (no-GAN multi-scale) | v6 (z-aug)  |
-|------------|------------:|-------------:|-------------:|---------------------:|------------:|------------------------:|------------:|
-| Ω_m  (p0)  |          63 |         26.1 |        0.137 |                0.169 |   **0.125** |                   0.158 |        6.60 |
-| Ω_b  (p1)  |        75.8 |         0.95 |       0.0071 |                0.010 |      0.0076 |              **0.0054** |        0.16 |
-| h    (p2)  |        0.12 |         0.27 |   **0.0084** |                0.010 |       0.011 |                  0.0122 |        0.19 |
-| n_s  (p3)  |       4 900 |         43.1 |        0.032 |            **0.029** |       0.051 |                   0.041 |       27.43 |
-| σ_8  (p4)  |         258 |         0.58 |        0.150 |                0.165 |       0.143 |               **0.126** |        1.28 |
+| Param      | LR baseline | v1 (vanilla) | v2 (Pk loss) | v3 (multi-scale GAN) | v4 (no-GAN) | v5 (no-GAN multi-scale) | v6 (z-aug)  | v7 (v4 + warm-start v2) |
+|------------|------------:|-------------:|-------------:|---------------------:|------------:|------------------------:|------------:|------------------------:|
+| Ω_m  (p0)  |          63 |         26.1 |        0.137 |                0.169 |   **0.125** |                   0.158 |        6.60 |                   0.176 |
+| Ω_b  (p1)  |        75.8 |         0.95 |       0.0071 |                0.010 |      0.0076 |                  0.0054 |        0.16 |              **0.0050** |
+| h    (p2)  |        0.12 |         0.27 |   **0.0084** |                0.010 |       0.011 |                  0.0122 |        0.19 |                   0.019 |
+| n_s  (p3)  |       4 900 |         43.1 |        0.032 |            **0.029** |       0.051 |                   0.041 |       27.43 |                   0.051 |
+| σ_8  (p4)  |         258 |         0.58 |        0.150 |                0.165 |       0.143 |               **0.126** |        1.28 |                   0.130 |
 
 **Note on reproducibility (fixed 2026-05-11):** `evaluate.py` previously did
 not seed `torch`/`numpy` before sampling 2000 posterior draws per simulation,
