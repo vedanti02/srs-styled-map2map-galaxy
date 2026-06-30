@@ -89,9 +89,26 @@ def power_spectrum(delta, lbox, n_bins=32):
     return k_centers, pk, n_modes
 
 
-def cube_pk(cube_6ch, lbox, estimator="div", n_bins=32):
-    """One-shot: 6-channel cube → P(k) on the displacement field."""
-    disp = cube_6ch[:3]
+def counts_to_overdensity(cube, nbar=None):
+    """1-channel halo-count cube → overdensity delta = n/nbar - 1 (per-box mean)."""
+    c = np.asarray(cube, dtype=np.float64)
+    if c.ndim == 4:        # (1, N, N, N) -> (N, N, N)
+        c = c[0]
+    if nbar is None:
+        nbar = max(c.mean(), 1e-6)
+    return c / nbar - 1.0
+
+
+def cube_pk_counts(cube, lbox, n_bins=32, nbar=None):
+    """Eulerian count field → P(k) on its overdensity (no displacement transform)."""
+    return power_spectrum(counts_to_overdensity(cube, nbar), lbox, n_bins=n_bins)
+
+
+def cube_pk(cube, lbox, estimator="div", n_bins=32):
+    """One-shot cube → P(k). estimator 'counts' = 1-ch density; 'div'/'cic' = 6-ch displacement."""
+    if estimator == "counts":
+        return cube_pk_counts(cube, lbox, n_bins=n_bins)
+    disp = cube[:3]
     if estimator == "div":
         delta = divergence_density(disp, lbox)
     elif estimator == "cic":
@@ -121,7 +138,7 @@ def main():
                    help="stitched/ root, OR directory of transform.py outputs.")
     p.add_argument("--output", required=True, help="Output directory for Pk arrays.")
     p.add_argument("--lbox", type=float, default=1000.0, help="Box size in Mpc/h.")
-    p.add_argument("--estimator", choices=["div", "cic"], default="div")
+    p.add_argument("--estimator", choices=["div", "cic", "counts"], default="div")
     p.add_argument("--n-bins", type=int, default=32)
     p.add_argument("--snap", default="PART_009")
     p.add_argument("--kind", choices=["quijote", "quijotelike"], default="quijote",

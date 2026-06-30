@@ -24,8 +24,10 @@ except ImportError:
 _SET_RE = re.compile(r"set(\d+)")
 
 
-def _collect_pk_theta(pk_dir, stitched_root, snap="PART_009"):
-    """Pair each pk_*.npz with the matching θ from style.npy."""
+def _collect_pk_theta(pk_dir, stitched_root, snap="PART_009", theta_npz=None):
+    """Pair each pk_*.npz with the matching θ. θ from cmass_theta.npz[idx] if
+    theta_npz is given, else from stitched_root/set{sid}_{kind}/.../style.npy."""
+    theta_table = np.load(theta_npz)["theta"] if theta_npz else None
     files = sorted(glob.glob(os.path.join(pk_dir, "pk_*.npz")))
     X, Y = [], []
     for f in files:
@@ -33,10 +35,13 @@ def _collect_pk_theta(pk_dir, stitched_root, snap="PART_009"):
         if m is None:
             continue
         sid = int(m.group(1))
-        theta_path = os.path.join(stitched_root, f"set{sid}_quijote", snap, "style.npy")
-        if not os.path.exists(theta_path):
-            theta_path = os.path.join(stitched_root, f"set{sid}_quijotelike", snap, "style.npy")
-        theta = np.load(theta_path).astype(np.float32)
+        if theta_table is not None:
+            theta = theta_table[sid].astype(np.float32)
+        else:
+            theta_path = os.path.join(stitched_root, f"set{sid}_quijote", snap, "style.npy")
+            if not os.path.exists(theta_path):
+                theta_path = os.path.join(stitched_root, f"set{sid}_quijotelike", snap, "style.npy")
+            theta = np.load(theta_path).astype(np.float32)
         pk = np.load(f)["pk"].astype(np.float32)
         # log P(k) is the conventional summary; clip to avoid -inf
         pk = np.log10(np.maximum(pk, 1e-12))
@@ -45,11 +50,11 @@ def _collect_pk_theta(pk_dir, stitched_root, snap="PART_009"):
 
 
 def train_nde(pk_dir, stitched_root, out_path, n_train=None,
-              theta_low=0.0, theta_high=1.5, hidden=64, num_transforms=5):
+              theta_low=0.0, theta_high=1.5, hidden=64, num_transforms=5, theta_npz=None):
     if not SBI_AVAILABLE:
         raise RuntimeError("sbi not installed — pip install sbi")
 
-    X, Y = _collect_pk_theta(pk_dir, stitched_root)
+    X, Y = _collect_pk_theta(pk_dir, stitched_root, theta_npz=theta_npz)
     if n_train is not None:
         X, Y = X[:n_train], Y[:n_train]
     print(f"train: X={X.shape} (log Pk), Y={Y.shape} (theta)")
@@ -74,15 +79,18 @@ def train_nde(pk_dir, stitched_root, out_path, n_train=None,
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--pk-dir", required=True, help="Directory of pk_*.npz files (training set).")
-    p.add_argument("--stitched-root", required=True,
-                   help="Root of stitched/ (for looking up θ via set ID).")
+    p.add_argument("--stitched-root", default="",
+                   help="Root of stitched/ (for looking up θ via set ID). Unused if --theta-npz given.")
+    p.add_argument("--theta-npz", default="",
+                   help="cmass_theta.npz with 'theta' (idx->5 params); overrides --stitched-root.")
     p.add_argument("--out", required=True, help="Path to save the trained posterior (.pkl).")
     p.add_argument("--n-train", type=int, default=None)
     p.add_argument("--theta-low", type=float, default=0.0)
     p.add_argument("--theta-high", type=float, default=1.5)
     args = p.parse_args()
     train_nde(args.pk_dir, args.stitched_root, args.out,
-              n_train=args.n_train, theta_low=args.theta_low, theta_high=args.theta_high)
+              n_train=args.n_train, theta_low=args.theta_low, theta_high=args.theta_high,
+              theta_npz=args.theta_npz or None)
 
 
 if __name__ == "__main__":

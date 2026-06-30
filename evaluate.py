@@ -28,7 +28,9 @@ def _load_pk_set(pk_dir, prefix):
     return out
 
 
-def _load_theta(stitched_root, sid, snap="PART_009"):
+def _load_theta(stitched_root, sid, snap="PART_009", theta_table=None):
+    if theta_table is not None:
+        return theta_table[sid].astype(np.float32)
     for kind in ("quijote", "quijotelike"):
         p = os.path.join(stitched_root, f"set{sid}_{kind}", snap, "style.npy")
         if os.path.exists(p):
@@ -62,7 +64,9 @@ def main():
     p.add_argument("--pk-hr-prefix", default="pk_quijote_")
     p.add_argument("--pk-sr-prefix", default="pk_set",
                    help="Filename prefix for SR Pk files. Use 'pk_quijotelike_' for LR baseline.")
-    p.add_argument("--stitched-root", required=True)
+    p.add_argument("--stitched-root", default="")
+    p.add_argument("--theta-npz", default="",
+                   help="cmass_theta.npz with 'theta' (idx->5 params); overrides --stitched-root.")
     p.add_argument("--n-samples", type=int, default=2000)
     p.add_argument("--output", required=True, help="Output .npz with per-sim metrics.")
     p.add_argument("--restrict-sids", default=None,
@@ -76,6 +80,8 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
+
+    theta_table = np.load(args.theta_npz)["theta"] if args.theta_npz else None
 
     q_hr = _load_posterior(args.posterior_hr)
     q_sr = _load_posterior(args.posterior_sr)
@@ -93,7 +99,7 @@ def main():
         common = [s for s in common if s in keep]
     # Use the same train/val/test split as training to identify held-out sims.
     # PairDataset deterministic split with seed=0 — replicate here to filter.
-    if args.restrict_sids is None:
+    if args.restrict_sids is None and not args.theta_npz:
         from data.pair_dataset import PairDataset
         val_ds = PairDataset(args.stitched_root, split="val", seed=0)
         common = [s for s in common if s in set(val_ds.ids)]
@@ -102,7 +108,7 @@ def main():
     rows = []
     for sid in common:
         x_hr = pk_hr[sid]; x_sr = pk_sr[sid]
-        theta_true = _load_theta(args.stitched_root, sid)
+        theta_true = _load_theta(args.stitched_root, sid, theta_table=theta_table)
 
         s_hr = _sample(q_hr, x_hr, args.n_samples)
         s_sr = _sample(q_sr, x_sr, args.n_samples)

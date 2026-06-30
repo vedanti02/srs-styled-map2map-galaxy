@@ -52,7 +52,8 @@ inference/transformed/
 *.png
 *.pdf
 *.svg
-!runs/
+# NOTE: do NOT blanket-negate runs/ here — `!runs/` re-includes GBs of run outputs.
+# runs/baseline/ is already tracked; new run dirs (runs/patch_cmass/, ...) stay ignored.
 !runs/baseline/
 !runs/baseline/plots/
 !runs/baseline/plots/**
@@ -73,3 +74,10 @@ slurm-*.out
 scratch/
 tmp/
 *.tmp
+
+# Local job-id / chain scratch files (transient slurm bookkeeping)
+.*chain.txt
+
+# Tracked report figures (small PNGs referenced by FINAL.md)
+!figures_cmass/
+!figures_cmass/*.png
