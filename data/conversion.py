@@ -10,7 +10,8 @@ Pipeline overview
 For each simulation (quijote + quijotelike pair):
   1. Load halo positions and velocities from HDF5.
   2. Derive voxel_side = (L^3/M)^(1/3) (mean inter-halo spacing) and
-     N_global = round(L / voxel_side) (number of voxels per axis in the full box).
+     N_global = ceil(L / voxel_side) (number of voxels per axis in the full box;
+     rounding UP guarantees N_global^3 >= M so every halo can be assigned).
   3. Run assign_halos_to_global_voxels once over the full N_global^3 grid.
      Each halo is claimed by exactly one voxel; no halo is double-counted across
      overlapping patches.
@@ -131,9 +132,11 @@ def load_cosmo(data_dir: Path, catalog: str, sim_id: int):
 
 
 def save_outputs(out_dir: Path, disp: np.ndarray, vel: np.ndarray,
-                 style: np.ndarray, skip_existing: bool = True) -> bool:
+                 style: np.ndarray, skip_existing: bool = True,
+                 counts: np.ndarray | None = None) -> bool:
     """
-    Save displacement, velocity, and cosmological style arrays to disk.
+    Save displacement, velocity, cosmological style, and (optionally) halo-count
+    arrays to disk.
 
     Parameters
     ----------
@@ -141,6 +144,7 @@ def save_outputs(out_dir: Path, disp: np.ndarray, vel: np.ndarray,
     disp    : (3, Ni, Nj, Nk) float32  Lagrangian displacement [Mpc/h]
     vel     : (3, Ni, Nj, Nk) float32  halo velocity [km/s]
     style   : (C,) float32 or None     cosmological parameters
+    counts  : (1, Ni, Nj, Nk) float32 or None  halos per voxel (halo_counts_field)
 
     Returns
     -------
@@ -155,6 +159,9 @@ def save_outputs(out_dir: Path, disp: np.ndarray, vel: np.ndarray,
 
     if style is not None:
         np.save(out_dir / "style.npy", style.astype(np.float32))
+
+    if counts is not None:
+        np.save(out_dir / "counts.npy", counts.astype(np.float32))
 
     return True
 
@@ -175,7 +182,7 @@ def build_global_voxel_grid(N_global: int, voxel_side: float,
 
     Parameters
     ----------
-    N_global   : int    number of voxels per axis; typically round(box_length / voxel_side)
+    N_global   : int    number of voxels per axis; typically compute_n_global(box_length, voxel_side)
     voxel_side : float  physical side length of each voxel [Mpc/h]
     box_length : float  periodic box side [Mpc/h]
 
@@ -428,6 +435,47 @@ def assign_halos_to_global_voxels(
     return disp_field, vel_field
 
 
+def halo_counts_field(halo_pos: np.ndarray, voxel_side: float,
+                      N_global: int, box_length: float) -> np.ndarray:
+    """
+    Histogram halos onto the voxel grid: counts per voxel (many-to-one).
+
+    Unlike assign_halos_to_global_voxels (one-to-one matching, multiplicity
+    discarded), every halo is counted in exactly one voxel and a voxel may hold
+    any number of halos.  Uses the SAME node-centred lattice convention as
+    build_global_voxel_grid: voxel i's centre is at i * voxel_side, so a halo is
+    counted at its NEAREST node, i.e. voxel index round(pos / voxel_side) mod
+    N_global.  (Plain floor(pos / voxel_side) would bin into the cell whose
+    lower corner is the node — shifted half a voxel from the displacement
+    field's catchment regions.)
+
+    Parameters
+    ----------
+    halo_pos   : (M, 3) float  halo positions [Mpc/h]
+    voxel_side : float         voxel side length [Mpc/h]
+    N_global   : int           voxels per axis
+    box_length : float         periodic box side [Mpc/h]
+
+    Returns
+    -------
+    counts : (1, N_global, N_global, N_global) float32
+        Halo count per voxel; counts.sum() == M.  Leading channel axis matches
+        the (C, N, N, N) layout of the displacement/velocity fields so the same
+        patch slicing applies unchanged.
+
+    Example
+    -------
+    box_length=4, voxel_side=2, N_global=2 (nodes at {0, 2} per axis):
+    a halo at x=0.9 → round(0.45)=0 → voxel 0; at x=1.1 → round(0.55)=1 →
+    voxel 1; at x=3.1 → round(1.55)=2 ≡ 0 (mod 2) → wraps to voxel 0 (node 0
+    at distance 0.9 through the periodic boundary is nearer than node 2 at 1.1).
+    """
+    idx = np.round((halo_pos % box_length) / voxel_side).astype(np.int64) % N_global
+    counts = np.zeros((N_global, N_global, N_global), dtype=np.float32)
+    np.add.at(counts, (idx[:, 0], idx[:, 1], idx[:, 2]), 1.0)
+    return counts[np.newaxis]   # (1, N_global, N_global, N_global)
+
+
 # ---------------------------------------------------------------------------
 # Patch geometry helper (kept for reference and unit testing)
 # ---------------------------------------------------------------------------
@@ -479,6 +527,38 @@ def generate_patch_center(
         (k * stride + (Nk - 1) / 2.0) * voxel_side,
     ], dtype=np.float64) % box_length
     return center.astype(np.float32)
+
+
+def compute_n_global(box_length: float, voxel_side: float) -> int:
+    """
+    Number of voxels per axis needed to cover the box at spacing voxel_side.
+
+    Uses ceil, NOT round: with voxel_side = (L^3/M)^(1/3) the exact ratio
+    L / voxel_side equals M^(1/3), so round() gives N_global^3 < M whenever the
+    fractional part of M^(1/3) is below 0.5 — i.e. fewer voxels than halos, and
+    since assign_halos_to_global_voxels grants each voxel at most one halo, some
+    halos could then never be assigned.  Rounding up guarantees N_global^3 >= M.
+
+    The small epsilon guards against floating-point noise pushing an exactly
+    integer ratio (M a perfect cube) just above the integer, which would
+    otherwise over-allocate one full extra layer of voxels.
+
+    Parameters
+    ----------
+    box_length : float  periodic box side [Mpc/h]
+    voxel_side : float  voxel side length [Mpc/h]
+
+    Returns
+    -------
+    int  smallest N_global with N_global * voxel_side >= box_length (up to fp noise)
+
+    Example
+    -------
+    M=800 halos, L=100:  voxel_side = (1e6/800)^(1/3) ≈ 10.772,
+    L/voxel_side = 800^(1/3) ≈ 9.283 → ceil → 10 (10^3 = 1000 >= 800).
+    round() would give 9 (9^3 = 729 < 800: 71 halos unassignable).
+    """
+    return int(np.ceil(box_length / voxel_side - 1e-9))
 
 
 def compute_n_patches(N_global: int, N: int, stride: int) -> int:
@@ -580,8 +660,9 @@ def generate_patches_for_sim(
 
     # Mean inter-halo spacing: assume M halos fill a box of volume L^3 uniformly.
     voxel_side = (box_length ** 3 / M) ** (1.0 / 3.0)   # [Mpc/h]
-    # N_global: number of voxels that tile the box at the mean inter-halo spacing.
-    N_global = int(np.round(box_length / voxel_side))
+    # N_global: voxels per axis, rounded UP so N_global^3 >= M and every halo
+    # can be claimed by some voxel (see compute_n_global docstring).
+    N_global = compute_n_global(box_length, voxel_side)
     logger.info(f"  voxel_side={voxel_side:.4f} Mpc/h, N_global={N_global}")
 
     n_patches = compute_n_patches(N_global, N, stride)
