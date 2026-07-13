@@ -76,7 +76,11 @@ def main():
             ax[0].imshow(hr2d, origin="lower", cmap="viridis", vmin=0, vmax=vmax); ax[0].set_title(f"HR counts (set{idx}, ∑z)")
             ax[1].imshow(sr2d, origin="lower", cmap="viridis", vmin=0, vmax=vmax); ax[1].set_title("SR stitched counts")
             im = ax[2].imshow(err.sum(2), origin="lower", cmap="magma"); ax[2].set_title("|SR-HR| (∑z)"); fig.colorbar(im, ax=ax[2], shrink=.8)
-            for a in ax: a.axvline(64, color="w", ls=":", lw=0.8); a.axhline(64, color="w", ls=":", lw=0.8)
+            # mark the core boundary OUTSIDE the data area only (in-plot white lines
+            # read as a seam in the residual panel — mentor feedback)
+            for a in ax:
+                a.set_xticks([0, 64, 127]); a.set_yticks([0, 64, 127])
+                for s in (a.spines.values()): s.set_visible(True)
             fig.suptitle(label); fig.tight_layout(); fig.savefig(f"{args.out}_slice.png", dpi=130); plt.close(fig)
             slice_done = True
         if (n + 1) % 25 == 0 or n + 1 == len(files):

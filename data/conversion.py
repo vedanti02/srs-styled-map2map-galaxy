@@ -27,6 +27,8 @@ Slurm array-job chunking
 jobs.  Job j processes simulations [j*size, j*size + size).
 """
 
+from __future__ import annotations   # allow `X | None` annotations on Python < 3.10
+
 import argparse
 import json
 import logging

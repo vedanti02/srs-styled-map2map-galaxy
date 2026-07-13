@@ -26,6 +26,13 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt-dir", default="checkpoints/patch_cmass_A/")
     p.add_argument("--pad", type=int, default=0)
+    p.add_argument("--pad-loss", default="crop", choices=["crop", "full"],
+                   help="crop: loss on the kept 64^3 core only (trim-aware). "
+                        "full: loss on the whole (64+2pad)^3 output incl. the halo "
+                        "that is trimmed at test time (trim-unaware).")
+    p.add_argument("--select", default="pk", choices=["pk", "l1"],
+                   help="checkpoint-selection metric on the stitched 128 validation: "
+                        "pk = Pk RMS (legacy), l1 = L1/voxel (no-Pk protocol).")
     p.add_argument("--transform", default="log1p", choices=["log1p", "scale", "delta"])
     p.add_argument("--nbar", default="perbox", choices=["perbox", "global"])
     p.add_argument("--epochs", type=int, default=30)
@@ -134,9 +141,15 @@ def main():
     os.makedirs(args.ckpt_dir, exist_ok=True)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pad = args.pad
-    arm = "A/baseline (naive stitch)" if pad == 0 else f"B/boundary-masked (pad={pad}, overlap-tile)"
+    # loss_crop: how much to trim the generator output before the loss.
+    # crop (aware): trim to the kept 64^3 core. full (unaware): loss on everything.
+    loss_crop = pad if args.pad_loss == "crop" else 0
+    loss_grid = PATCH + 2 * (pad - loss_crop)          # spatial size the losses see
+    arm = "A/baseline (naive stitch)" if pad == 0 else \
+        f"B/boundary-masked (pad={pad}, pad-loss={args.pad_loss})"
 
-    train_ds = PatchPairDatasetCmass(split="train", pad=pad, transform=args.transform)
+    train_ds = PatchPairDatasetCmass(split="train", pad=pad, transform=args.transform,
+                                     pad_target=(args.pad_loss == "full"))
     val_ds = PatchPairDatasetCmass(split="val", pad=pad, transform=args.transform)
     if args.max_train_sets > 0:
         train_ds.ids = train_ds.ids[:args.max_train_sets]
@@ -148,9 +161,10 @@ def main():
     opt_g = torch.optim.Adam(G.parameters(), lr=args.lr_g, betas=(args.beta1, args.beta2))
     opt_d = torch.optim.Adam(D.parameters(), lr=args.lr_d, betas=(args.beta1, args.beta2))
 
-    pk64 = TorchPk(N=PATCH, lbox=args.lbox * PATCH / N_FULL, n_bins=args.n_pk_bins_patch, device=dev)
+    pk64 = TorchPk(N=loss_grid, lbox=args.lbox * loss_grid / N_FULL,
+                   n_bins=args.n_pk_bins_patch, device=dev)
     pk128 = TorchPk(N=N_FULL, lbox=args.lbox, n_bins=args.n_pk_bins, device=dev)
-    win = hann3d(PATCH, dev)
+    win = hann3d(loss_grid, dev)
     scale = train_ds.scale
     nbar = None if args.nbar == "perbox" else scale
     use_gan = args.lambda_adv > 0
@@ -174,14 +188,14 @@ def main():
         for it, (lr_in, hr_tgt, theta, _) in enumerate(loader):
             B = lr_in.shape[0]
             x_lr = lr_in.reshape(B * N_PATCHES, 1, *lr_in.shape[3:]).to(dev, non_blocking=True)
-            x_hr = hr_tgt.reshape(B * N_PATCHES, 1, PATCH, PATCH, PATCH).to(dev, non_blocking=True)
+            x_hr = hr_tgt.reshape(B * N_PATCHES, 1, *hr_tgt.shape[3:]).to(dev, non_blocking=True)
             th = theta.repeat_interleave(N_PATCHES, 0).to(dev, non_blocking=True)
 
             dr = df_ = 0.0
             if use_gan:
                 opt_d.zero_grad(set_to_none=True)
                 with torch.no_grad():
-                    fake = crop_interior(G(x_lr, th), pad)
+                    fake = crop_interior(G(x_lr, th), loss_crop)
                 lr_real, lr_fake = D(x_hr, th), D(fake, th)
                 loss_d = softplus_loss_real(lr_real) + softplus_loss_fake(lr_fake)
                 if args.lambda_r1 > 0 and dstep % args.r1_every == 0:
@@ -192,7 +206,7 @@ def main():
                 dr, df_ = lr_real.mean().item(), lr_fake.mean().item()
 
             opt_g.zero_grad(set_to_none=True)
-            fake = crop_interior(G(x_lr, th), pad)
+            fake = crop_interior(G(x_lr, th), loss_crop)
             adv = softplus_loss_real(D(fake, th)) if use_gan else torch.tensor(0.0, device=dev)
             rec = rec_loss(fake, x_hr, args.rec_smooth_sigma)
             if args.lambda_pk > 0:
@@ -215,15 +229,16 @@ def main():
                                        args.transform, scale, nbar, args.val_max_sims)
         print(f"epoch {epoch} {time.time()-t0:.1f}s  STITCHED-128 val_L1/vox={vl1:.4f} val_pkRMS={vpk:.4f}", flush=True)
 
+        vsel = vpk if args.select == "pk" else vl1     # checkpoint-selection metric
         st = {"model": G.state_dict(), "D": D.state_dict(), "opt_g": opt_g.state_dict(),
               "opt_d": opt_d.state_dict(), "epoch": epoch, "args": vars(args), "pad": pad,
-              "val_l1": vl1, "val_pk_rms": vpk, "best_pk": best}
+              "val_l1": vl1, "val_pk_rms": vpk, "best_pk": best, "select": args.select}
         if (epoch + 1) % args.save_every == 0 or epoch + 1 == args.epochs:
             torch.save(st, os.path.join(args.ckpt_dir, f"epoch_{epoch+1}.pt"))
-        if vpk < best:
-            best = vpk; st["best_pk"] = best
+        if vsel < best:
+            best = vsel; st["best_pk"] = best
             torch.save(st, os.path.join(args.ckpt_dir, "best.pt"))
-            print(f"saved best.pt (stitched val_pk_rms={vpk:.4f})")
+            print(f"saved best.pt (val_{args.select}={vsel:.4f})")
 
 
 if __name__ == "__main__":

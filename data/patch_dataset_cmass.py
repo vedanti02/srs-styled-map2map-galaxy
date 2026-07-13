@@ -137,12 +137,17 @@ class PatchPairDatasetCmass(Dataset):
     """Indexed by SIM. __getitem__ -> (lr_in, hr_tgt, theta, idx):
         lr_in:  (8, 1, 64+2*pad, ...)  overlap+wrap LR patches (model input)
         hr_tgt: (8, 1, 64, 64, 64)     HR cores (target)
+    With pad_target=True the HR target is padded like the input
+    ((64+2*pad)^3, periodic wrap) — the 'unaware' padding-loss variant where the
+    loss covers the halo voxels that are trimmed at test time.
     """
 
-    def __init__(self, split="train", pad=8, normalize_inputs=True, transform="log1p"):
+    def __init__(self, split="train", pad=8, normalize_inputs=True, transform="log1p",
+                 pad_target=False):
         self.pad = pad
         self.normalize_inputs = normalize_inputs
         self.transform = transform
+        self.pad_target = pad_target
         self.ids = _split_ids(split)
         self.theta, self.scale = _load_theta()
 
@@ -160,8 +165,9 @@ class PatchPairDatasetCmass(Dataset):
     def __getitem__(self, k):
         idx = self.ids[k]
         lr, hr = self.load_boxes(idx)
+        tgt_pad = self.pad if self.pad_target else 0
         lr_in = np.stack([extract_patch(lr, p, self.pad) for p in range(N_PATCHES)])
-        hr_tgt = np.stack([extract_patch(hr, p, 0) for p in range(N_PATCHES)])
+        hr_tgt = np.stack([extract_patch(hr, p, tgt_pad) for p in range(N_PATCHES)])
         return (torch.from_numpy(lr_in), torch.from_numpy(hr_tgt),
                 torch.from_numpy(self.theta[idx]), idx)
 
