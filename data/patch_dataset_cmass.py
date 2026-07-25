@@ -18,6 +18,7 @@ real neighbours by construction -> no data seam (unlike the lagrangian patches).
 by `python -m data.patch_dataset_cmass`.
 """
 import os
+import time
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -56,8 +57,17 @@ def _read_cosmo(idx):
 
 
 def build_theta_cache(n=2000):
-    """idx -> (5,) cosmo table + a global count scale (mean count over train sims), cached."""
-    theta = np.stack([_read_cosmo(i) for i in range(n)])
+    """idx -> (5,) cosmo table + a global count scale (mean count over train sims), cached.
+
+    INDEXING BUG FIX (2026-07-22): the processed count fields {k:04d}_label.npy were
+    written in STRING-sorted sim-id order (sorted(range(n), key=str) = [0,1,10,100,...]),
+    while _read_cosmo(i) reads nbody/{i}/config.yaml in NUMERIC order. So field index k
+    is the halo field of numeric sim string_sorted[k]. We must store theta in FIELD order
+    (theta[k] = cosmo of field k) so every caller that pairs field k with theta[k] is
+    correct. Verified 2000/2000 via halo counts: field_count[k]==catalog_count[perm[k]].
+    """
+    perm = sorted(range(n), key=str)                    # field index k -> numeric sim id
+    theta = np.stack([_read_cosmo(perm[k]) for k in range(n)])
     # count scale from a sample of train sims (preserve absolute amplitude => one global scale)
     tr = [d["idx"] for d in np.load(os.path.join(PROCESSED, "train_list.npy"), allow_pickle=True)]
     sample = tr[:50]
@@ -126,6 +136,17 @@ def counts_to_delta(counts, nbar=None, eps=1e-6):
     return (arr / nbar - 1.0).astype(np.float32)
 
 
+def _load_npy_retry(path, retries=5, base_delay=1.0):
+    """np.load with backoff retry for transient NFS FileNotFoundError."""
+    for attempt in range(retries):
+        try:
+            return np.load(path)
+        except FileNotFoundError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+
+
 def _split_ids(split):
     if split == "all":
         return list(range(2000))
@@ -155,8 +176,13 @@ class PatchPairDatasetCmass(Dataset):
         return len(self.ids)
 
     def load_boxes(self, idx):
-        lr = np.load(f"{PROCESSED}/{idx:04d}_input.npy").astype(np.float32)[None]  # (1,128,128,128)
-        hr = np.load(f"{PROCESSED}/{idx:04d}_label.npy").astype(np.float32)[None]
+        # universedata is an NFS mount that has been running at 100% capacity
+        # (1.1TB/1.1TB free) and intermittently drops reads on files that do
+        # exist (transient "No such file or directory" from DataLoader workers,
+        # confirmed by immediate re-read succeeding). Retry before failing the
+        # whole training run over a blip.
+        lr = _load_npy_retry(f"{PROCESSED}/{idx:04d}_input.npy").astype(np.float32)[None]  # (1,128,128,128)
+        hr = _load_npy_retry(f"{PROCESSED}/{idx:04d}_label.npy").astype(np.float32)[None]
         if self.normalize_inputs:
             lr = to_model_space(lr, self.transform, self.scale)
             hr = to_model_space(hr, self.transform, self.scale)

@@ -174,8 +174,25 @@ def main():
         c = torch.load(args.resume, map_location=dev, weights_only=False)
         G.load_state_dict(c["model"]); D.load_state_dict(c["D"])
         opt_g.load_state_dict(c["opt_g"]); opt_d.load_state_dict(c["opt_d"])
-        start = c["epoch"] + 1; best = c.get("best_pk", float("inf"))
-        print(f"resumed at epoch {start}")
+        # load_state_dict restores the checkpoint's LR into each param group,
+        # silently overriding --lr-g/--lr-d; re-apply the requested LR so a
+        # resumed run can actually change it (e.g. an LR ablation).
+        for g in opt_g.param_groups: g["lr"] = args.lr_g
+        for g in opt_d.param_groups: g["lr"] = args.lr_d
+        start = c["epoch"] + 1
+        # The saved "best" threshold is only comparable if this run tracks the
+        # SAME selection metric as the checkpoint's source run. Carrying over
+        # a pk-RMS threshold while now selecting on l1 (or vice versa) silently
+        # stops best.pt from ever being written again, since the two metrics
+        # sit on different numeric scales for this problem.
+        if c.get("select", "pk") == args.select:
+            best = c.get("best_pk", float("inf"))
+        else:
+            best = float("inf")
+            print(f"resume select mismatch (ckpt={c.get('select','pk')} vs "
+                  f"this run={args.select}); resetting best threshold")
+        print(f"resumed at epoch {start}  lr_g={args.lr_g} lr_d={args.lr_d} "
+              f"select={args.select} best={best}")
 
     print(f"ARM {arm}  transform={args.transform} nbar={args.nbar} GAN={'on' if use_gan else 'OFF'}")
     print(f"G {sum(p.numel() for p in G.parameters())/1e6:.2f}M  D {sum(p.numel() for p in D.parameters())/1e6:.2f}M")

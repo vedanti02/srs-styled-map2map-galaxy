@@ -7,6 +7,7 @@
 #   RESUME=checkpoints/.../epoch_N.pt   continue a stopped run
 #   PADLOSS=crop|full   trim-aware vs trim-unaware padding loss (default crop)
 #   SELECT=pk|l1        checkpoint-selection metric (default pk)
+#   LRG=1e-4 LRD=1e-4   generator / discriminator learning rate (default 1e-4 each)
 #SBATCH --job-name=patchcmass
 #SBATCH --partition=general
 #SBATCH --output=logs/%j_patchcmass.log
@@ -38,5 +39,6 @@ python train_patch_cmass.py \
     --lambda-adv "${ADV:-1.0}" --lambda-rec 2.0 --lambda-pk "${PK:-2.0}" \
     --lambda-r1 10.0 --r1-every 16 \
     --pad-loss "${PADLOSS:-crop}" --select "${SELECT:-pk}" \
+    --lr-g "${LRG:-1e-4}" --lr-d "${LRD:-1e-4}" \
     --save-every 5 --log-every 200 --grad-clip 1.0 --val-max-sims 40 \
     "${RESUME_ARGS[@]}"
