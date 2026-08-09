@@ -19,7 +19,7 @@ def members(tag):
         if os.path.exists(p): out.append(_load_posterior(p))
     return out
 
-TAGS=["hr","Anopk","LR","Baware","Bunaware"]
+TAGS=["hr","Anopk","LR","Baware","Bunaware","Afixfid","Afixtrue"]  # Afixfid = retrained correct-conditioning SR (fiducial)
 mem={t:members(t) for t in TAGS}
 for t in TAGS: print(f"  {t}: {len(mem[t])} members",flush=True)
 qHR=mem["hr"]

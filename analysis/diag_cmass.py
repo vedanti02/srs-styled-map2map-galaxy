@@ -28,31 +28,39 @@ def build_noise_list(grid, num_blocks, seed, device):
 
 
 def make_pk_panel(results, k_nyq, outpath, title="Power Spectrum"):
-    """P(k) (HR vs SR median + band), transfer SR/HR, cross-power r(k). Labels use HR/SR."""
-    Ks = np.stack([r[0] for r in results]); Ts = np.stack([r[1] for r in results])
-    Ps = np.stack([r[2] for r in results]); Rs = np.stack([r[3] for r in results])
+    """P(k) for HR/SR/LR (median+band), transfer X/HR, cross-power r(k) for SR and LR.
+    results = list of (k, P_HR, P_SR, P_LR, r_SR, r_LR)."""
+    Ks  = np.stack([r[0] for r in results])
+    Phr = np.stack([r[1] for r in results]); Psr = np.stack([r[2] for r in results])
+    Plr = np.stack([r[3] for r in results]); Rsr = np.stack([r[4] for r in results])
+    Rlr = np.stack([r[5] for r in results])
     k = np.nanmedian(Ks, axis=0); v = k > 0; k = k[v]
-    Ts, Ps, Rs = Ts[:, v], Ps[:, v], Rs[:, v]
-    t_med = np.nanmedian(Ts, 0)
-    p_med = np.nanmedian(Ps, 0); p_lo = np.nanpercentile(Ps, 16, 0); p_hi = np.nanpercentile(Ps, 84, 0)
-    tf = Ps / np.maximum(Ts, 1e-30)
-    tf_med = np.nanmedian(tf, 0); tf_lo = np.nanpercentile(tf, 16, 0); tf_hi = np.nanpercentile(tf, 84, 0)
-    r_med = np.nanmedian(Rs, 0); r_lo = np.nanpercentile(Rs, 16, 0); r_hi = np.nanpercentile(Rs, 84, 0)
+    Phr, Psr, Plr, Rsr, Rlr = Phr[:, v], Psr[:, v], Plr[:, v], Rsr[:, v], Rlr[:, v]
+    def band(A): return np.nanmedian(A, 0), np.nanpercentile(A, 16, 0), np.nanpercentile(A, 84, 0)
     fig, ax = plt.subplots(3, 1, figsize=(7.5, 11), sharex=True)
-    ax[0].plot(k, t_med, color="red", lw=2, label="HR")
-    ax[0].fill_between(k, p_lo, p_hi, color="C0", alpha=0.3)
-    ax[0].plot(k, p_med, color="C0", lw=2, label="SR median")
+    # --- top: P(k) HR, SR, LR ---
+    hr_med, _, _ = band(Phr); sr_med, sr_lo, sr_hi = band(Psr); lr_med, lr_lo, lr_hi = band(Plr)
+    ax[0].plot(k, hr_med, color="red", lw=2, label="HR")
+    ax[0].fill_between(k, sr_lo, sr_hi, color="C0", alpha=0.25); ax[0].plot(k, sr_med, color="C0", lw=2, label="SR median")
+    ax[0].fill_between(k, lr_lo, lr_hi, color="C3", alpha=0.12); ax[0].plot(k, lr_med, color="C3", lw=1.8, ls=":", label="LR median")
     ax[0].axvline(k_nyq, color="gray", lw=1.5, label="Nyquist (approx)")
     ax[0].set_yscale("log"); ax[0].set_xscale("log"); ax[0].set_ylabel("P(k)"); ax[0].set_title(title)
     ax[0].legend(fontsize=10); ax[0].grid(alpha=0.3, which="both")
-    ax[1].fill_between(k, tf_lo, tf_hi, color="C0", alpha=0.3); ax[1].plot(k, tf_med, color="C0", lw=2)
+    # --- middle: transfer X/HR (SR and LR) ---
+    tsr = Psr / np.maximum(Phr, 1e-30); tlr = Plr / np.maximum(Phr, 1e-30)
+    ts_med, ts_lo, ts_hi = band(tsr); tl_med, _, _ = band(tlr)
+    ax[1].fill_between(k, ts_lo, ts_hi, color="C0", alpha=0.25); ax[1].plot(k, ts_med, color="C0", lw=2, label="SR/HR")
+    ax[1].plot(k, tl_med, color="C3", lw=1.8, ls=":", label="LR/HR")
     ax[1].axhline(1.0, color="k", lw=1, ls="--"); ax[1].axvline(k_nyq, color="gray", lw=1.5)
     ax[1].set_yscale("log"); ax[1].set_xscale("log"); ax[1].set_ylim(1e-2, 1e2)
-    ax[1].set_ylabel("Transfer (SR/HR)"); ax[1].grid(alpha=0.3, which="both")
-    ax[2].fill_between(k, r_lo, r_hi, color="C0", alpha=0.3); ax[2].plot(k, r_med, color="C0", lw=2)
+    ax[1].set_ylabel("Transfer (X/HR)"); ax[1].legend(fontsize=9); ax[1].grid(alpha=0.3, which="both")
+    # --- bottom: cross-coherence r(k) for SR and LR ---
+    rs_med, rs_lo, rs_hi = band(Rsr); rl_med, _, _ = band(Rlr)
+    ax[2].fill_between(k, rs_lo, rs_hi, color="C0", alpha=0.25); ax[2].plot(k, rs_med, color="C0", lw=2, label="SR x HR")
+    ax[2].plot(k, rl_med, color="C3", lw=1.8, ls=":", label="LR x HR")
     ax[2].axhline(1.0, color="k", lw=1, ls="--"); ax[2].axhline(0.0, color="k", lw=1, ls="--")
     ax[2].axvline(k_nyq, color="gray", lw=1.5); ax[2].set_xscale("log"); ax[2].set_ylim(-0.25, 1.1)
-    ax[2].set_xlabel("k [1/Box]"); ax[2].set_ylabel("Cross-power (SR x HR)"); ax[2].grid(alpha=0.3, which="both")
+    ax[2].set_xlabel("k [1/Box]"); ax[2].set_ylabel("Cross-power (X x HR)"); ax[2].legend(fontsize=9); ax[2].grid(alpha=0.3, which="both")
     plt.tight_layout(); plt.savefig(outpath, dpi=120); plt.close(fig); print(f"saved {outpath}")
 
 
@@ -80,6 +88,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", required=True)
     p.add_argument("--mode", default="naive", choices=["naive", "overlap"])
+    p.add_argument("--theta-mode", default="fiducial", choices=["true", "fiducial"],
+                   help="fiducial = prior-mean cosmology for all boxes (deployment-faithful); "
+                        "true = per-box cosmology (oracle)")
     p.add_argument("--tag", default="cmassA")
     p.add_argument("--out-dir", default="figures_cmass")
     p.add_argument("--n-sims", type=int, default=12)
@@ -88,6 +99,8 @@ def main():
     args = p.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    FIDUCIAL = np.array([0.30, 0.05, 0.70, 1.00, 0.80], np.float32)  # prior mean (Om,Ob,h,ns,s8)
+    print(f"theta-mode={args.theta_mode}", flush=True)
 
     ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
     saved = ck.get("args", {}) or {}
@@ -114,7 +127,8 @@ def main():
             lr_c, hr_c = ds_raw.load_boxes(idx)               # raw count boxes
             patches = np.stack([extract_patch(lr_m, q, pad) for q in range(N_PATCHES)])
             xb = torch.from_numpy(patches).to(dev)
-            th = torch.from_numpy(ds.theta[idx]).unsqueeze(0).expand(N_PATCHES, -1).to(dev)
+            th_vec = ds.theta[idx] if args.theta_mode == "true" else FIDUCIAL
+            th = torch.from_numpy(np.asarray(th_vec, np.float32)).unsqueeze(0).expand(N_PATCHES, -1).to(dev)
             fake = crop_interior(G(xb, th, nl), pad).cpu().numpy()        # (8,1,64,64,64) model space
             sr_patches = to_counts(fake, transform, ds.scale)            # counts per patch
             sr_c = stitch_patches(sr_patches)                            # (1,128,128,128) counts
@@ -123,7 +137,9 @@ def main():
             d_hr = counts_to_delta(hr_c); d_sr = counts_to_delta(sr_c); d_lr = counts_to_delta(lr_c)
             k, Pa, Pb, Pab, m = cross_pk(d_hr[0], d_sr[0], lbox_box, n_bins=args.n_bins)
             r = np.zeros_like(k); r[m] = Pab[m] / np.sqrt(np.maximum(Pa * Pb, 1e-60))[m]
-            box_results.append((k, Pa, Pb, r))
+            _, _, Plr, Pab_l, ml = cross_pk(d_hr[0], d_lr[0], lbox_box, n_bins=args.n_bins)
+            r_l = np.zeros_like(k); r_l[ml] = Pab_l[ml] / np.sqrt(np.maximum(Pa * Plr, 1e-60))[ml]
+            box_results.append((k, Pa, Pb, Plr, r, r_l))
             if i == 0:
                 box_cache = (d_lr[0], d_hr[0], d_sr[0], idx)
 
@@ -134,7 +150,9 @@ def main():
                 dh = counts_to_delta(hr_pp[q]); dsr = counts_to_delta(sr_patches[q][0]); dl = counts_to_delta(lr_pp[q])
                 kk, Qa, Qb, Qab, mm = cross_pk(dh, dsr, lbox_patch, n_bins=args.n_bins)
                 rr = np.zeros_like(kk); rr[mm] = Qab[mm] / np.sqrt(np.maximum(Qa * Qb, 1e-60))[mm]
-                patch_results.append((kk, Qa, Qb, rr))
+                _, _, Qlr, Qab_l, mml = cross_pk(dh, dl, lbox_patch, n_bins=args.n_bins)
+                rr_l = np.zeros_like(kk); rr_l[mml] = Qab_l[mml] / np.sqrt(np.maximum(Qa * Qlr, 1e-60))[mml]
+                patch_results.append((kk, Qa, Qb, Qlr, rr, rr_l))
                 if i == 0 and q == 0:
                     patch_cache = (dl, dh, dsr, idx, q)
             print(f"  sim {i+1}/{len(ids)} (set{idx}) done", flush=True)

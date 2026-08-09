@@ -17,5 +17,5 @@ cd /home/vkshirsa/srs-styled-map2map-galaxy
 : "${CKPT:?}"; : "${MODE:?}"; : "${TAG:?}"
 source /home/vkshirsa/venv/bin/activate
 export PYTHONPATH=/home/vkshirsa/srs-styled-map2map-galaxy:${PYTHONPATH:-} OMP_NUM_THREADS=8 PYTHONUNBUFFERED=1
-python -m analysis.diag_cmass --ckpt "$CKPT" --mode "$MODE" --tag "$TAG" --n-sims 16 --out-dir figures_cmass
+python -m analysis.diag_cmass --ckpt "$CKPT" --mode "$MODE" --tag "$TAG" --theta-mode "${TMODE:-fiducial}" --n-sims 16 --out-dir figures_cmass
 echo "diag $TAG done"
