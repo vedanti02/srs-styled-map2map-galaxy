@@ -46,14 +46,19 @@ def make_pk_panel(results, k_nyq, outpath, title="Power Spectrum"):
     ax[0].axvline(k_nyq, color="gray", lw=1.5, label="Nyquist (approx)")
     ax[0].set_yscale("log"); ax[0].set_xscale("log"); ax[0].set_ylabel("P(k)"); ax[0].set_title(title)
     ax[0].legend(fontsize=10); ax[0].grid(alpha=0.3, which="both")
-    # --- middle: transfer X/HR (SR and LR) ---
+    # --- middle: transfer X/HR (SR and LR), LINEAR zoomed axis with BOTH bands ---
+    # The old log 1e-2..1e2 axis compressed a ~12% per-patch error into an invisible sliver
+    # at y=1, and the LR band was discarded, so LR and SR looked identical (D-F23).
     tsr = Psr / np.maximum(Phr, 1e-30); tlr = Plr / np.maximum(Phr, 1e-30)
-    ts_med, ts_lo, ts_hi = band(tsr); tl_med, _, _ = band(tlr)
-    ax[1].fill_between(k, ts_lo, ts_hi, color="C0", alpha=0.25); ax[1].plot(k, ts_med, color="C0", lw=2, label="SR/HR")
-    ax[1].plot(k, tl_med, color="C3", lw=1.8, ls=":", label="LR/HR")
+    ts_med, ts_lo, ts_hi = band(tsr); tl_med, tl_lo, tl_hi = band(tlr)
+    rms_sr = np.sqrt(np.nanmean((tsr - 1.0) ** 2)); rms_lr = np.sqrt(np.nanmean((tlr - 1.0) ** 2))
+    ax[1].fill_between(k, tl_lo, tl_hi, color="C3", alpha=0.15)
+    ax[1].plot(k, tl_med, color="C3", lw=1.8, ls=":", label=f"LR/HR (RMS err vs HR {rms_lr*100:.1f}%)")
+    ax[1].fill_between(k, ts_lo, ts_hi, color="C0", alpha=0.25)
+    ax[1].plot(k, ts_med, color="C0", lw=2, label=f"SR/HR (RMS err vs HR {rms_sr*100:.1f}%)")
     ax[1].axhline(1.0, color="k", lw=1, ls="--"); ax[1].axvline(k_nyq, color="gray", lw=1.5)
-    ax[1].set_yscale("log"); ax[1].set_xscale("log"); ax[1].set_ylim(1e-2, 1e2)
-    ax[1].set_ylabel("Transfer (X/HR)"); ax[1].legend(fontsize=9); ax[1].grid(alpha=0.3, which="both")
+    ax[1].set_xscale("log"); ax[1].set_ylim(0.6, 1.5)
+    ax[1].set_ylabel("Transfer (X/HR), linear"); ax[1].legend(fontsize=9); ax[1].grid(alpha=0.3, which="both")
     # --- bottom: cross-coherence r(k) for SR and LR ---
     rs_med, rs_lo, rs_hi = band(Rsr); rl_med, _, _ = band(Rlr)
     ax[2].fill_between(k, rs_lo, rs_hi, color="C0", alpha=0.25); ax[2].plot(k, rs_med, color="C0", lw=2, label="SR x HR")

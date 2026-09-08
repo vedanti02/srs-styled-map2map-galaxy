@@ -2,7 +2,9 @@
 # Box + per-patch diagnostic panels (Pk: P(k)/transfer/cross-power, and projection) for a cmass arm.
 #   sbatch --export=ALL,CKPT=checkpoints/patch_cmass_A/best.pt,MODE=naive,TAG=cmassA scripts/diag_cmass.slurm
 #SBATCH --job-name=diagcmass
-#SBATCH --partition=general
+#SBATCH --partition=preempt
+#SBATCH --qos=preempt_qos
+#SBATCH --account=bapoczos
 #SBATCH --output=logs/%j_diagcmass.log
 #SBATCH --error=logs/%j_diagcmass.err
 #SBATCH --nodes=1

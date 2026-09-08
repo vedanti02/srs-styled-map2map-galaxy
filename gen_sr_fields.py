@@ -13,6 +13,10 @@ def main():
     ap.add_argument("--theta-mode",default="true",choices=["true","fiducial"],
                     help="true = per-box cosmology (oracle upper bound); "
                          "fiducial = prior-mean for ALL boxes (deployment-faithful, no theta leak)")
+    ap.add_argument("--no-round",dest="round",action="store_false",
+                    help="save the CONTINUOUS count-space output (float32, clip 0-200, no round). "
+                         "Used to test the discretization/stochasticity hypothesis.")
+    ap.set_defaults(round=True)
     a=ap.parse_args()
     dev=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(a.out,exist_ok=True)
@@ -38,7 +42,8 @@ def main():
             th=torch.from_numpy(np.asarray(th_vec,np.float32)).unsqueeze(0).expand(N_PATCHES,-1).to(dev)
             fake=crop_interior(G(xb,th,nl),pad).cpu().numpy()
             sr=to_counts(stitch_patches(fake),tf,ds.scale)[0]  # (128,128,128)
-            sr=np.clip(np.nan_to_num(sr,nan=0.,posinf=200.,neginf=0.),0,200).round().astype(np.uint8)
+            sr=np.clip(np.nan_to_num(sr,nan=0.,posinf=200.,neginf=0.),0,200)
+            sr=sr.round().astype(np.uint8) if a.round else sr.astype(np.float32)
             np.save(of,sr)
             if (n+1)%100==0: print(f"{n+1}/{len(ds.ids)} {time.time()-t0:.0f}s",flush=True)
     print("GEN_SR_DONE",flush=True)
