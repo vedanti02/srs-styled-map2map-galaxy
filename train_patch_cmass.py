@@ -1,4 +1,4 @@
-"""CMASS patch GAN: 1-channel halo-count fields, LR(FastPM)->HR(Nbody) per 64^3 patch,
+"""CMASS patch GAN: 1-channel halo-count fields, LR(CHARM)->HR(Nbody) per 64^3 patch,
 stitch to 128^3. Eulerian count data (no Lagrangian/displacement) — see patch_dataset_cmass.
 
   --pad 0   Arm A (mentor 2.1): full-patch loss, naive stitch.

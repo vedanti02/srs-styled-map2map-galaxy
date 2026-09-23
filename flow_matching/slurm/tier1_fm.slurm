@@ -4,24 +4,22 @@
 #   -> 8 draws on 60 val boxes -> spread/calibration eval (T(k), r(k), SSR, rank hist)
 #   sbatch --export=ALL,TAG=fm_gauss flow_matching/slurm/tier1_fm.slurm
 #SBATCH --job-name=fm_tier1
-#SBATCH --partition=preempt
-#SBATCH --qos=preempt_qos
-#SBATCH --account=bapoczos
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_fm_tier1.log
 #SBATCH --error=logs/%j_fm_tier1.err
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=06:00:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
 : "${TAG:?}"
-CKPT=${CKPT:-/data/user_data/vkshirsa/cmass-ili/models/${TAG}/best.pt}
+CKPT=${CKPT:-$SRS_CMASS_ROOT/models/${TAG}/best.pt}
 STEPS=${STEPS:-32}; SHIFT=${SHIFT:-0.0}
-SRDIR=/data/user_data/vkshirsa/cmass-ili/sr_fields/${TAG}
-SPREAD=/data/user_data/vkshirsa/cmass-ili/sr_fields/${TAG}_draws
+SRDIR=$SRS_CMASS_ROOT/sr_fields/${TAG}
+SPREAD=$SRS_CMASS_ROOT/sr_fields/${TAG}_draws
 mkdir -p "$SRDIR" "$SPREAD" figures_cmass runs/patch_cmass logs
-source /home/vkshirsa/venv/bin/activate
 export PYTHONPATH=$PWD PYTHONUNBUFFERED=1 OMP_NUM_THREADS=8
 echo "Tier-1 [$TAG] ckpt=$CKPT steps=$STEPS shift=$SHIFT on $(hostname)"
 python -m flow_matching.sample_fm --ckpt "$CKPT" --out "$SRDIR" --split val  --steps "$STEPS" --decode-shift "$SHIFT"

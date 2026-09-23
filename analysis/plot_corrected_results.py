@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import h5py, os, time
 
-NB="/data/group_data/universedata/cmass-ili/quijote/nbody/L1000-N128"
+from paths import NBODY as NB
 theta=np.load("data/cmass_theta_numeric_buggy.npz")["theta"]   # NUMERIC order = cosmo[sim s]
 NAMES=["$\\Omega_m$","$\\Omega_b$","$h$","$n_s$","$\\sigma_8$"]
 

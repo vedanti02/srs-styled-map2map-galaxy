@@ -10,7 +10,7 @@ np.set_printoptions(precision=4, suppress=True, linewidth=120)
 CKPT=sys.argv[1]; dev=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("="*72); print("1) WHERE THE DATA COMES FROM"); print("="*72)
-print(f"count fields : {PROCESSED}/{{idx:04d}}_input.npy = LR (FastPM), _label.npy = HR (Quijote N-body)")
+print(f"count fields : {PROCESSED}/{{idx:04d}}_input.npy = LR (CHARM), _label.npy = HR (Quijote N-body)")
 print(f"cosmology    : {NBODY}/{{idx}}/config.yaml -> 5 params, cached in data/cmass_theta.npz")
 print("2000 paired sims, each a 128^3 halo-count grid on a periodic 1000 Mpc/h box (7.8 Mpc/h voxels)")
 
@@ -19,7 +19,7 @@ ds_raw=PatchPairDatasetCmass(split="test",pad=0,normalize_inputs=False)
 idx=ds.ids[0]; lr_raw,hr_raw=ds_raw.load_boxes(idx); theta=ds.theta[idx]
 
 print("\n"+"="*72); print(f"2) ONE REAL BOX (sim idx={idx}): what a 'halo count field' actually is"); print("="*72)
-for name,b in [("LR input (FastPM) ",lr_raw),("HR label (Quijote)",hr_raw)]:
+for name,b in [("LR input (CHARM)  ",lr_raw),("HR label (Quijote)",hr_raw)]:
     b0=b[0]; vals,cnt=np.unique(b0,return_counts=True)
     print(f"{name}: shape={b.shape} dtype={b.dtype}  min={b0.min():.0f} max={b0.max():.0f} mean={b0.mean():.4f}  total halos={b0.sum():.0f}")
     print("    how many voxels hold N halos: "+"  ".join(f"N={int(v)}:{c}" for v,c in zip(vals[:7],cnt[:7]))+" ...")

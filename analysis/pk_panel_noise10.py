@@ -12,8 +12,9 @@ from analysis.diag_cmass import build_noise_list
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 M=10; NBINS=40; LBOX=1000.0
 FID=np.array([0.30,0.05,0.70,1.00,0.80],np.float32)
-MODELS={"fixcond (baseline)":"/data/user_data/vkshirsa/cmass-ili/models/patch_cmass_A_nopk_fixcond/best.pt",
-        "Arm R (stage0_R)":"/data/user_data/vkshirsa/cmass-ili/models/stage0_R/best.pt"}
+from paths import MODELS as MODELS_DIR
+MODELS={"fixcond (baseline)":f"{MODELS_DIR}/patch_cmass_A_nopk_fixcond/best.pt",
+        "Arm R (stage0_R)":f"{MODELS_DIR}/stage0_R/best.pt"}
 dev=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ds=PatchPairDatasetCmass(split="test",pad=0,transform="log1p"); ds_raw=PatchPairDatasetCmass(split="test",pad=0,normalize_inputs=False)
 idx=ds.ids[0]; lr_m,_=ds.load_boxes(idx); lr_c,hr_c=ds_raw.load_boxes(idx); print(f"box idx={idx}",flush=True)

@@ -94,7 +94,7 @@ def main():
         lrpks = [np.load(f)["pk"] for f in sorted(glob.glob(f"{R}/pk_LRbase/pk_set*_transformed.npz"))[:200]]
         if lrpks:
             lr_mean = np.log10(np.maximum(np.array(lrpks).mean(0), 1e-12))
-            a0.loglog(k[m], 10 ** lr_mean[m], "r:", lw=1.6, label="LR (FastPM)")
+            a0.loglog(k[m], 10 ** lr_mean[m], "r:", lw=1.6, label="LR (CHARM)")
         a0.set_xlabel("k [h/Mpc]"); a0.set_ylabel("P(k) [(Mpc/h)³]"); a0.legend()
         a0.set_title("Absolute P(k): SR vs HR (mean over test sims)")
         # right: ratio zoom

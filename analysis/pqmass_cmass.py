@@ -17,8 +17,9 @@ import numpy as np, os, sys, time
 from scipy.stats import chi2 as chi2dist
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 
-PROC="/data/group_data/universedata/cmass-ili/processed"
-SRDIR=sys.argv[1] if len(sys.argv)>1 else "/data/user_data/vkshirsa/cmass-ili/sr_fields/Afix_fiducial"
+from paths import PROCESSED as PROC
+from paths import SR_FIELDS
+SRDIR=sys.argv[1] if len(sys.argv)>1 else f"{SR_FIELDS}/Afix_fiducial"
 TAG  =sys.argv[2] if len(sys.argv)>2 else "Afix_fiducial"
 NREG=10; NTESS=200; NMAX=200
 rng=np.random.default_rng(0)

@@ -3,24 +3,25 @@
 #   sbatch --export=ALL,CKPT=checkpoints/patch_cmass_A/best.pt,MODE=naive,TAG=cmassA_naive   scripts/eval_cmass_wrapper.slurm
 #   sbatch --export=ALL,CKPT=checkpoints/patch_cmass_B/best.pt,MODE=overlap,TAG=cmassB_overlap scripts/eval_cmass_wrapper.slurm
 #SBATCH --job-name=evalcmass
-#SBATCH --partition=general
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_evalcmass.log
 #SBATCH --error=logs/%j_evalcmass.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=05:00:00
 
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
-source /home/vkshirsa/venv/bin/activate
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
+
 : "${CKPT:?}"; : "${MODE:?}"; : "${TAG:?}"
-export PYTHONPATH=/home/vkshirsa/srs-styled-map2map-galaxy:${PYTHONPATH:-} OMP_NUM_THREADS=8 PYTHONUNBUFFERED=1
+export PYTHONPATH=$PWD:${PYTHONPATH:-} OMP_NUM_THREADS=8 PYTHONUNBUFFERED=1
 THETA=data/cmass_theta.npz
 R=runs/patch_cmass; mkdir -p "$R" logs
-SCR=/tmp/vkshirsa_cmass_${SLURM_JOB_ID}; mkdir -p "$SCR"
+SCR=${TMPDIR:-/tmp}/srs_cmass_${SLURM_JOB_ID}; mkdir -p "$SCR"
 trap 'rm -rf "$SCR"' EXIT
 echo "ARM eval: CKPT=$CKPT MODE=$MODE TAG=$TAG  scratch=$SCR"
 

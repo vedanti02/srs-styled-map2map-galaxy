@@ -3,7 +3,7 @@ Fraction of voxels where SR != LR, split by LR count, plus the mean |SR-LR| in c
   python -m flow_matching.diag_edit_fraction TAG=/srdir [...] --n-boxes 50
 """
 import argparse, os, numpy as np
-PROC = "/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 
 
 def main():

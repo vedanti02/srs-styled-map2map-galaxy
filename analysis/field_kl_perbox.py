@@ -11,7 +11,7 @@ import glob, os, sys, time, numpy as np, torch
 sys.path.insert(0, ".")
 from models.field_cnn import FieldCNN
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-PROC="/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 CKD="runs/patch_cmass/field_ckpts_fiducial"
 dev=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

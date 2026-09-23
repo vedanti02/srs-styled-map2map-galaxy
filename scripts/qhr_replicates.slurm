@@ -1,17 +1,17 @@
 #!/bin/bash
 #SBATCH --job-name=qhrrep
-#SBATCH --partition=general
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_qhrrep.log
 #SBATCH --error=logs/%j_qhrrep.err
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=02:00:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
-source /home/vkshirsa/venv/bin/activate
-export PYTHONPATH=/home/vkshirsa/srs-styled-map2map-galaxy:${PYTHONPATH:-} PYTHONUNBUFFERED=1
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
+export PYTHONPATH=$PWD:${PYTHONPATH:-} PYTHONUNBUFFERED=1
 mkdir -p runs/patch_cmass/qhr_reps
 # 4 q_HR each in a FRESH process (like the originals), no explicit seed -> each
 # gets fresh random torch state. Tests whether separate-process NDEs cluster

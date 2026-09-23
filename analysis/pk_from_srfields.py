@@ -5,7 +5,7 @@ import numpy as np, os, sys, time
 sys.path.insert(0, ".")
 from analysis.power_spectrum import cube_pk_counts
 SRDIR=sys.argv[1]; OUT=sys.argv[2]; SPLIT=sys.argv[3] if len(sys.argv)>3 else "train"
-PROC="/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 os.makedirs(OUT, exist_ok=True)
 ids=sorted(int(d["idx"]) for d in np.load(f"{PROC}/{SPLIT}_list.npy", allow_pickle=True))
 print(f"P(k) for {len(ids)} {SPLIT} SR boxes: {SRDIR} -> {OUT}", flush=True)

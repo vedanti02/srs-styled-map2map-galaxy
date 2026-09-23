@@ -3,7 +3,7 @@ dropout, MSE, 300 epochs. If train recovery -> ~0, the architecture can fit."""
 import sys, numpy as np, torch
 sys.path.insert(0,".")
 from models.field_cnn import FieldCNN
-PROC="/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 dev=torch.device("cuda")
 theta=np.load("data/cmass_theta.npz")["theta"]
 LO=np.array([0.10,0.03,0.50,0.80,0.60],np.float32); HI=np.array([0.50,0.07,0.90,1.20,1.00],np.float32)

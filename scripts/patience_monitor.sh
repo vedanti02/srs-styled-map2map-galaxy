@@ -1,8 +1,8 @@
 #!/bin/bash
 # Manual early-stopping (patience=3) for the two real-scale training arms, then
 # wait for the afterany-chained evals + summary and print the final comparison.
-cd /home/vkshirsa/srs-styled-map2map-galaxy
-source /home/vkshirsa/venv/bin/activate 2>/dev/null
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
+2>/dev/null
 A=8407065; B=8413515
 read EA EB SUM < .realchain.txt
 PAT=3

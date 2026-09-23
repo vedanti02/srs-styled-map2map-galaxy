@@ -1,25 +1,23 @@
 #!/bin/bash
 # Stage-0 TIER-1 held-out evaluation for one arm, or the fixcond baseline (identical protocol):
 #   gen SR (val+test, fiducial) -> PQMass (val) -> diag panels (test) -> bispectrum (test) -> halo count
-#   sbatch --export=ALL,TAG=stage0_R,CKPT=/data/user_data/vkshirsa/cmass-ili/models/stage0_R/best.pt scripts/stage0_eval.slurm
+#   sbatch --export=ALL,TAG=stage0_R,CKPT=$SRS_CMASS_ROOT/models/stage0_R/best.pt scripts/stage0_eval.slurm
 #   baseline: TAG=Afix_fiducial CKPT=.../models/patch_cmass_A_nopk_fixcond/best.pt
 # P(k) appears only as a held-out CHECK (diag transfer panel); it is never trained on (protocol item 2).
 #SBATCH --job-name=stage0eval
-#SBATCH --partition=preempt
-#SBATCH --qos=preempt_qos
-#SBATCH --account=bapoczos
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_stage0eval.log
 #SBATCH --error=logs/%j_stage0eval.err
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=01:30:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
 : "${TAG:?}"; : "${CKPT:?}"
-SRDIR=/data/user_data/vkshirsa/cmass-ili/sr_fields/${TAG}
+SRDIR=$SRS_CMASS_ROOT/sr_fields/${TAG}
 mkdir -p "$SRDIR" figures_cmass runs/patch_cmass logs
-source /home/vkshirsa/venv/bin/activate
 export PYTHONPATH=$PWD PYTHONUNBUFFERED=1 OMP_NUM_THREADS=8
 echo "Tier-1 eval [$TAG] on $(hostname)  ckpt=$CKPT"
 python gen_sr_fields.py --ckpt "$CKPT" --out "$SRDIR" --split val  --theta-mode fiducial

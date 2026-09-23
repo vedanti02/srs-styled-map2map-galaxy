@@ -1,6 +1,6 @@
 """Train the standalone conditional flow-matching corrector (no GAN, no theta).
 
-  python -m flow_matching.train_fm --ckpt-dir /data/user_data/vkshirsa/cmass-ili/models/fm_gauss \
+  python -m flow_matching.train_fm --ckpt-dir $SRS_CMASS_ROOT/models/fm_gauss \
       --source gaussian --cache --epochs 60
 
 Protocol parity with train_patch_cmass.py: same dataset/splits, 64^3 cores (pad 0, naive

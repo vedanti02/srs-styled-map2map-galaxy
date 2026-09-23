@@ -1,24 +1,22 @@
 #!/bin/bash
 # Stage-0 TIER-2: summary cross-fidelity for one surviving arm (the GATE for a winner).
 #   gen 1600 train SR (fiducial) -> P(k) set -> 4 NDE seeds -> ensemble cross-fid vs HR (padding_crossfid).
-#   sbatch --export=ALL,TAG=stage0_R,CKPT=/data/user_data/vkshirsa/cmass-ili/models/stage0_R/best.pt scripts/stage0_tier2.slurm
+#   sbatch --export=ALL,TAG=stage0_R,CKPT=$SRS_CMASS_ROOT/models/stage0_R/best.pt scripts/stage0_tier2.slurm
 # gen_sr_fields skips existing files, so a preempted/requeued job resumes the generation.
 #SBATCH --job-name=stage0t2
-#SBATCH --partition=preempt
-#SBATCH --qos=preempt_qos
-#SBATCH --account=bapoczos
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_stage0t2.log
 #SBATCH --error=logs/%j_stage0t2.err
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=10:00:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
 : "${TAG:?}"; : "${CKPT:?}"
-SRDIR=/data/user_data/vkshirsa/cmass-ili/sr_fields/${TAG}
+SRDIR=$SRS_CMASS_ROOT/sr_fields/${TAG}
 PKDIR=runs/patch_cmass/pk_${TAG}_train
-source /home/vkshirsa/venv/bin/activate
 export PYTHONPATH=$PWD PYTHONUNBUFFERED=1 OMP_NUM_THREADS=8
 echo "Tier-2 [$TAG] on $(hostname)  ckpt=$CKPT"
 echo "=== 1) train SR (1600 boxes, fiducial) ==="; python gen_sr_fields.py --ckpt "$CKPT" --out "$SRDIR" --split train --theta-mode fiducial

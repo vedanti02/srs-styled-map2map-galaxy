@@ -1,17 +1,17 @@
 #!/bin/bash
 #SBATCH --job-name=qsrrep
-#SBATCH --partition=general
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_qsrrep.log
 #SBATCH --error=logs/%j_qsrrep.err
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=03:00:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
-source /home/vkshirsa/venv/bin/activate
-export PYTHONPATH=/home/vkshirsa/srs-styled-map2map-galaxy:${PYTHONPATH:-} PYTHONUNBUFFERED=1
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
+export PYTHONPATH=$PWD:${PYTHONPATH:-} PYTHONUNBUFFERED=1
 mkdir -p runs/patch_cmass/qsr_reps
 for arm in Anopk LRbase; do
   for i in 0 1 2 3; do

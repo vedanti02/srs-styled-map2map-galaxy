@@ -9,7 +9,7 @@ posterior (mu,sigma) per box, then:
 """
 import argparse, glob, os, re, numpy as np, torch
 from models.field_cnn import FieldCNN
-PROC="/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 
 def kl_gauss(m1,s1,m2,s2,eps=1e-8):
     s1=s1**2+eps; s2=s2**2+eps

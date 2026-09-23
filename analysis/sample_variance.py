@@ -17,7 +17,7 @@ from analysis.power_spectrum import cube_pk_counts
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 
 CKPT=sys.argv[1]; TAG=sys.argv[2] if len(sys.argv)>2 else "Afix_fiducial"
-PROC="/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 NBOX=60; M=12; L=1000.0
 FIDUCIAL=np.array([0.30,0.05,0.70,1.00,0.80],np.float32)
 CBINS=np.array([-0.5,0.5,1.5,2.5,3.5,4.5,5.5,7.5,11.5,20.5,np.inf])

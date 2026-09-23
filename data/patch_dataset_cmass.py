@@ -1,9 +1,10 @@
 """CMASS-ILI patch dataset — Eulerian halo COUNT fields (no Lagrangian/displacement).
 
 Drop-in analogue of data/patch_dataset_real.py, but on the cmass-ili data:
-  * source: /data/group_data/universedata/cmass-ili/processed/{idx:04d}_{input,label}.npy
-      input = LR (FastPM), label = HR (Quijote N-body); each (128,128,128) integer
-      halo-count field on a PERIODIC L=1000 Mpc/h box. idx == lhid (0..1999).
+  * source: paths.PROCESSED/{idx:04d}_{input,label}.npy
+      input = LR (CHARM halos on FastPM matter), label = HR (Quijote N-body); each (128,128,128) integer
+      halo-count field on a PERIODIC L=1000 Mpc/h box. idx is the FIELD index (0..1999), NOT the
+      Quijote lhid: field idx holds sim sorted(range(2000), key=str)[idx] (see build_theta_cache).
   * cosmology theta: quijote/nbody/L1000-N128/{idx}/config.yaml -> nbody.cosmo (5 params).
   * splits: processed/{train,val,test}_list.npy (lists of dicts with 'idx').
 
@@ -30,9 +31,7 @@ N_FULL = 128
 N_SPLIT = 2
 PATCH = 64
 N_PATCHES = N_SPLIT ** 3            # 8
-DATA_ROOT = "/data/group_data/universedata/cmass-ili"
-PROCESSED = os.path.join(DATA_ROOT, "processed")
-NBODY = os.path.join(DATA_ROOT, "quijote", "nbody", "L1000-N128")
+from paths import PROCESSED, NBODY
 THETA_CACHE = os.path.join(os.path.dirname(__file__), "cmass_theta.npz")
 
 

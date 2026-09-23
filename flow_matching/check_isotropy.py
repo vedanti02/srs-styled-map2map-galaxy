@@ -4,7 +4,7 @@ Compares the power in modes within 25 deg of each axis, per k-bin, over a few HR
   python -m flow_matching.check_isotropy --n-boxes 10
 """
 import argparse, numpy as np
-PROC = "/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 
 
 def main():

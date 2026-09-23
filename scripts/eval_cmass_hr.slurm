@@ -2,23 +2,23 @@
 # CMASS HR reference (no model): HR count cubes → Pk(counts) → q_HR NDE + split sids.
 # Runs in parallel with training.
 #SBATCH --job-name=evalcmass_hr
-#SBATCH --partition=general
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_evalcmass_hr.log
 #SBATCH --error=logs/%j_evalcmass_hr.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=04:00:00
 
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
-source /home/vkshirsa/venv/bin/activate
-export PYTHONPATH=/home/vkshirsa/srs-styled-map2map-galaxy:${PYTHONPATH:-} OMP_NUM_THREADS=8 PYTHONUNBUFFERED=1
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
+export PYTHONPATH=$PWD:${PYTHONPATH:-} OMP_NUM_THREADS=8 PYTHONUNBUFFERED=1
 THETA=data/cmass_theta.npz
 R=runs/patch_cmass; mkdir -p "$R" logs
-SCR=/tmp/vkshirsa_cmass_${SLURM_JOB_ID}; mkdir -p "$SCR"
+SCR=${TMPDIR:-/tmp}/srs_cmass_${SLURM_JOB_ID}; mkdir -p "$SCR"
 trap 'rm -rf "$SCR"' EXIT
 df -h "$SCR" | tail -1 >&2
 

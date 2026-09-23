@@ -15,7 +15,7 @@ import argparse, os, sys
 import numpy as np
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 
-PROC = "/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 CBINS = np.array([-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 7.5, 11.5, 20.5, np.inf])
 
 

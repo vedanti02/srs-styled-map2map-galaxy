@@ -3,7 +3,7 @@ plus per-bin ratio to HR. Tells WHICH count bins a decoder distorts.
   python -m flow_matching.diag_hist TAG=/path/to/srdir [TAG2=/path ...] --n-boxes 100
 """
 import argparse, os, numpy as np
-PROC = "/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 CBINS = np.array([-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 7.5, 11.5, 20.5, np.inf])
 LAB = ["0", "1", "2", "3", "4", "5", "6-7", "8-11", "12-20", ">20"]
 

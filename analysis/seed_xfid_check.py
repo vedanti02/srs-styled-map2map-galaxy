@@ -2,11 +2,14 @@
 0.137 (SR) vs 0.031 (LR) bar is robust or a fragile single-NDE artifact.
 For each NDE seed s: KL between q_HR(seed s) and q_source(seed s), evaluated on HR
 test P(k), meaned over test boxes. Reports the mean +/- spread over seeds, plus the
-HR-self floor across seed pairs. Uses the pre-trained posteriors in _robust_tmp."""
+HR-self floor across seed pairs.
+  python analysis/seed_xfid_check.py [NDE_DIR] [TAG ...]
+NDE_DIR defaults to the restored pre-Delta posteriors (_robust_tmp); new-protocol ones are in nde_v2."""
 import numpy as np, torch, sys, os
 sys.path.insert(0, ".")
 from evaluate import _load_pk_set, _load_posterior, _sample, kl_gauss
-R="runs/patch_cmass"; T=f"{R}/_robust_tmp"
+R="runs/patch_cmass"; T=sys.argv[1] if len(sys.argv)>1 else f"{R}/_robust_tmp"
+TAGS=sys.argv[2:] or ["LR","Anopk","Afixfid"]
 test=set(np.load(f"{R}/split_sids.npz")["test_sids"].tolist())
 pk_hr={s:v for s,v in _load_pk_set(f"{R}/pk_hr","pk_set").items() if s in test}
 common=sorted(pk_hr); print(f"{len(common)} test boxes",flush=True)
@@ -19,7 +22,7 @@ def xfid(qh,qx,n=1500):
         ks.append(kl_gauss(a.mean(0),a.std(0),b.mean(0),b.std(0)).mean())
     return float(np.mean(ks))
 print("\nper-seed summary cross-fid KL (q_source seed s vs q_HR seed s):",flush=True)
-for tag in ["LR","Anopk","Afixfid"]:
+for tag in TAGS:
     vals=[]
     for s in range(5):
         qh,qx=q("hr",s),q(tag,s)

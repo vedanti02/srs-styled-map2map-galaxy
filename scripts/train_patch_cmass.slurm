@@ -9,25 +9,26 @@
 #   SELECT=pk|l1        checkpoint-selection metric (default pk)
 #   LRG=1e-4 LRD=1e-4   generator / discriminator learning rate (default 1e-4 each)
 #SBATCH --job-name=patchcmass
-#SBATCH --partition=general
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_patchcmass.log
 #SBATCH --error=logs/%j_patchcmass.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=23:00:00
 
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
 : "${PAD:?need PAD}"; : "${CKPT:?need CKPT}"; : "${NAME:?need NAME}"
 mkdir -p logs "$CKPT"
-source /home/vkshirsa/venv/bin/activate
+
 echo "Job start $(date) on $(hostname); arm=$NAME pad=$PAD adv=${ADV:-1.0}" >&2
 nvidia-smi -L >&2
 export OMP_NUM_THREADS=4 PYTHONUNBUFFERED=1
-export PYTHONPATH=/home/vkshirsa/srs-styled-map2map-galaxy:${PYTHONPATH:-}
+export PYTHONPATH=$PWD:${PYTHONPATH:-}
 
 RESUME_ARGS=()
 if [ -n "${RESUME:-}" ]; then RESUME_ARGS=(--resume "$RESUME"); fi

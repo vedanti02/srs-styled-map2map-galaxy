@@ -43,7 +43,26 @@ def _load_posterior(path):
         return pickle.load(fh)
 
 
+def _pin_constant_features(post, x):
+    """Set features that were constant in training (the empty P(k) bins, x=log10(1e-12)) to their
+    training value. sbi z-scores x with std floored at 1e-7, so a 1-ulp difference in float32
+    log10(1e-12) between machines (x86 SIMD gave -12.000001, aarch64 gives -12.0) becomes a 9.5-sigma
+    input and wrecks the posterior. These features carry no information, so pinning them is exact."""
+    try:
+        std_layer = post.posterior_estimator.net._embedding_net[0]
+        mean, std = std_layer._mean.cpu().numpy(), std_layer._std.cpu().numpy()
+    except (AttributeError, IndexError, TypeError):
+        return x
+    const = std.reshape(-1) <= 1e-6
+    if const.any() and mean.size == x.size:
+        x = x.copy()
+        x[const] = mean.reshape(-1)[const]
+    return x
+
+
 def _sample(post, x, n):
+    keep = getattr(post, "srs_keep", None)     # set by inference.nde when zero-mode bins were dropped
+    x = x[keep] if keep is not None else _pin_constant_features(post, x)
     s = post.sample((n,), x=torch.from_numpy(x), show_progress_bars=False)
     return s.cpu().numpy()
 

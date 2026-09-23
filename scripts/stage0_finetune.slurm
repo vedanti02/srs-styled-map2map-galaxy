@@ -5,26 +5,25 @@
 # NOTE --epochs is the ABSOLUTE final epoch (loop is range(start, epochs)); computed on-node
 # from the checkpoint's epoch so that EXTRA epochs are actually run.
 #SBATCH --job-name=stage0ft
-#SBATCH --partition=preempt
-#SBATCH --qos=preempt_qos
-#SBATCH --account=bapoczos
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_stage0ft.log
 #SBATCH --error=logs/%j_stage0ft.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=06:00:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
 : "${TAG:?}"; : "${LREC:?}"; : "${SIGMA:?}"
-RESUME=/data/user_data/vkshirsa/cmass-ili/models/patch_cmass_A_nopk_fixcond/best.pt
-CKPT=/data/user_data/vkshirsa/cmass-ili/models/${TAG}
+RESUME=$SRS_CMASS_ROOT/models/patch_cmass_A_nopk_fixcond/best.pt
+CKPT=$SRS_CMASS_ROOT/models/${TAG}
 EXTRA=${EXTRA:-5}
 mkdir -p logs "$CKPT"
-source /home/vkshirsa/venv/bin/activate
-export OMP_NUM_THREADS=4 PYTHONUNBUFFERED=1 PYTHONPATH=/home/vkshirsa/srs-styled-map2map-galaxy:${PYTHONPATH:-}
+
+export OMP_NUM_THREADS=4 PYTHONUNBUFFERED=1 PYTHONPATH=$PWD:${PYTHONPATH:-}
 E0=$(python -c "import torch;print(torch.load('$RESUME',map_location='cpu',weights_only=False)['epoch'])")
 EPOCHS=$((E0+1+EXTRA))
 echo "Stage0 $TAG on $(hostname): resume epoch $E0 -> run epochs $((E0+1))..$((EPOCHS-1)) ($EXTRA extra) | lambda_rec=$LREC sigma=$SIGMA pk=0 adv=1 lr=5e-5 select=l1" >&2

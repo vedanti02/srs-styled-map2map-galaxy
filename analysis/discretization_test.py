@@ -24,8 +24,9 @@ from scipy.stats import chi2 as chi2dist
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from analysis.power_spectrum import cube_pk_counts
 
-PROC="/data/group_data/universedata/cmass-ili/processed"
-CONT=sys.argv[1] if len(sys.argv)>1 else "/data/user_data/vkshirsa/cmass-ili/sr_fields/Afix_fiducial_cont"
+from paths import PROCESSED as PROC
+from paths import SR_FIELDS
+CONT=sys.argv[1] if len(sys.argv)>1 else f"{SR_FIELDS}/Afix_fiducial_cont"
 TAG =sys.argv[2] if len(sys.argv)>2 else "Afix_fiducial"
 NMAX=200; NPK=40; L=1000.0
 rng=np.random.default_rng(0)

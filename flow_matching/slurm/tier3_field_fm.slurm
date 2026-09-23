@@ -6,24 +6,22 @@
 # Needs SR fields for the train split (tier2_fm) and the first 40 val boxes (tier1_fm).
 #   sbatch --export=ALL,TAG=fm_gauss flow_matching/slurm/tier3_field_fm.slurm
 #SBATCH --job-name=fm_tier3
-#SBATCH --partition=preempt
-#SBATCH --qos=preempt_qos
-#SBATCH --account=bapoczos
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_fm_tier3.log
 #SBATCH --error=logs/%j_fm_tier3.err
 #SBATCH --requeue
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=04:00:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
 : "${TAG:?}"
-SRDIR=/data/user_data/vkshirsa/cmass-ili/sr_fields/${TAG}
+SRDIR=$SRS_CMASS_ROOT/sr_fields/${TAG}
 CK=runs/patch_cmass/field_ckpts_${TAG}
-REF=/home/vkshirsa/srs-styled-map2map-galaxy/runs/patch_cmass/field_ckpts
+REF=$PWD/runs/patch_cmass/field_ckpts
 mkdir -p "$CK" logs
-source /home/vkshirsa/venv/bin/activate
 export PYTHONPATH=$PWD PYTHONUNBUFFERED=1 OMP_NUM_THREADS=8
 echo "Tier-3 field-level [$TAG] on $(hostname); SR from $SRDIR"
 n_tr=$(ls "$SRDIR"/sr_*.npy 2>/dev/null | grep -vc '_d[0-9]' || true)

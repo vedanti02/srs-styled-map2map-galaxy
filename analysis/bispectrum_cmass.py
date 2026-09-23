@@ -27,7 +27,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-PROCESSED = "/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED
 
 
 def counts_to_delta(counts):

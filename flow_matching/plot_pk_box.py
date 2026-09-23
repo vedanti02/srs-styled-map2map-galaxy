@@ -6,7 +6,7 @@ All on the count overdensity delta = n/nbar - 1 with per-box nbar, test split.
 import argparse, os, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from flow_matching.eval_spread import PkBins, delta
-PROC = "/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 
 
 def main():

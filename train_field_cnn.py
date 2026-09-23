@@ -6,7 +6,7 @@ import argparse, os, time, numpy as np, torch
 from torch.utils.data import DataLoader, TensorDataset
 from models.field_cnn import FieldCNN, moment_loss
 
-PROC="/data/group_data/universedata/cmass-ili/processed"
+from paths import PROCESSED as PROC
 LO=np.array([0.10,0.03,0.50,0.80,0.60],np.float32)   # Quijote LH prior lows
 HI=np.array([0.50,0.07,0.90,1.20,1.00],np.float32)   # highs
 

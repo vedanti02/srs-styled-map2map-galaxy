@@ -7,22 +7,21 @@
 #   sbatch --export=ALL,TAG=fm_gauss_nocond,SOURCE=gaussian,EXTRA="--no-cond" flow_matching/slurm/train_fm.slurm
 # Set AUG=los16 if check_isotropy shows redshift-space anisotropy along z.
 #SBATCH --job-name=fm_train
-#SBATCH --partition=preempt
-#SBATCH --qos=preempt_qos
-#SBATCH --account=bapoczos
+#SBATCH --partition=ghx4
+#SBATCH --account=bdne-dtai-gh
 #SBATCH --output=logs/%j_fm_train.log
 #SBATCH --error=logs/%j_fm_train.err
 #SBATCH --open-mode=append
 # (no --requeue: the afterany chain below restarts the job; requeue + chain ran two copies at once)
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=10:00:00
 set -euo pipefail
-cd /home/vkshirsa/srs-styled-map2map-galaxy
+cd "$SLURM_SUBMIT_DIR"; source scripts/env_delta.sh
 : "${TAG:?}"; : "${SOURCE:?}"
 EPOCHS=${EPOCHS:-60}; AUG=${AUG:-full48}; EXTRA=${EXTRA:-}
-CKPT=/data/user_data/vkshirsa/cmass-ili/models/${TAG}
+CKPT=$SRS_CMASS_ROOT/models/${TAG}
 mkdir -p "$CKPT" logs
 # Self-chaining, idempotent. The preempt partition has PreemptMode=REQUEUE, so a preempted job
 # restarts under the SAME job id and re-runs this script; SLURM also has no requeue on time
@@ -42,7 +41,6 @@ else
   echo "$(( $(cat "$CKPT/chain_count" 2>/dev/null || echo 0) + 1 ))" > "$CKPT/chain_count"
   echo "queued follow-up job $NEXT for $TAG (chain link $(cat "$CKPT/chain_count"))"
 fi
-source /home/vkshirsa/venv/bin/activate
 export PYTHONPATH=$PWD PYTHONUNBUFFERED=1 OMP_NUM_THREADS=8
 echo "train $TAG source=$SOURCE aug=$AUG epochs=$EPOCHS extra='$EXTRA' on $(hostname) $(date)"; nvidia-smi -L
 python -m flow_matching.train_fm --ckpt-dir "$CKPT" --source "$SOURCE" --aug "$AUG" --epochs "$EPOCHS" \

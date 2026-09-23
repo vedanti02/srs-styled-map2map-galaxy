@@ -10,8 +10,9 @@ read timed out at 30 min on the universedata NFS, job 10364325; even 500 takes ~
 import numpy as np, os, sys, time
 sys.path.insert(0,".")
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-PROC="/data/group_data/universedata/cmass-ili/processed"
-SRDIR=sys.argv[1] if len(sys.argv)>1 else "/data/user_data/vkshirsa/cmass-ili/sr_fields/Afix_fiducial"
+from paths import PROCESSED as PROC
+from paths import SR_FIELDS
+SRDIR=sys.argv[1] if len(sys.argv)>1 else f"{SR_FIELDS}/Afix_fiducial"
 TAG=sys.argv[2] if len(sys.argv)>2 else "Afix_fiducial"
 theta=np.load("data/cmass_theta.npz")["theta"]
 SUB=list(range(0,2000,4)); NSR_MAX=400; t0=time.time()
