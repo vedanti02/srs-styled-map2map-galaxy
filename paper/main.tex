@@ -1,0 +1,614 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2026_conference,times,fullpage}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+\input{new_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{xspace}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{listings}
+
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{patterns}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+
+\definecolor{commentteal}{RGB}{0, 128, 128}
+\newcommand{\SG}[1]{\textcolor{commentteal}{[Saumya: #1]}}
+
+\definecolor{commentpurple}{RGB}{128, 0, 128}
+\newcommand{\JL}[1]{\textcolor{commentpurple}{[Julia Liu: #1]}}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!50!black}\itshape,
+    stringstyle=\color{orange},
+    showstringspaces=false,
+    breaklines=true,
+    frame=single,
+    mathescape=true,
+    morekeywords={function, each, yield, class, concat, gather, normalized, uniform, where, randn_like, scatter, clip_grad_norm_}
+}
+
+\usepackage[margin=1in]{geometry}
+
+\title{Learning the Universe: Distribution-Matching for Cross-Fidelity Mapping in Astrophysical Simulations}
+\author{Vedanti Kshirsagar, Julia Liu, Saumya Goyal, Matthew Ho, Barnabas Poczos}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Extracting cosmological parameters from large-scale structure surveys means
+comparing observations to simulations through simulation-based inference (SBI)
+\cite{cranmer2020frontier}. SBI needs thousands of simulations to cover the
+parameter space. High-fidelity simulations are too expensive for this, which
+motivates fast emulators: explicit approximations such as the particle-mesh code
+FastPM \cite{feng2016fastpm}, or generative neural emulators such as CHARM
+\cite{pandey2025creating}, which produces high-resolution simulation outputs
+directly from low-resolution inputs. Both introduce a distribution shift relative
+to high-fidelity simulations. Left uncorrected, this shift biases downstream
+inference.
+
+This is a sim-to-real problem. \cite{bayer2025field} showed that different N-body
+codes are out of distribution at the field level, and that Gaussian smoothing can
+align them only by destroying small-scale information. Emulator shifts are usually
+larger and more structured, because emulators approximate the full generative
+process and not just the resolution. We need a correction that closes this gap
+without throwing away cosmological information.
+
+We pose this as a point cloud alignment problem. Simulation particles, halos, and
+galaxies are naturally sets of points in phase space (position, velocity, mass,
+structure). We seek a mapping $f_\psi$ from emulated catalogs to a distribution
+compatible with high-fidelity simulations. We define compatibility by an
+inference-consistency criterion: posteriors trained on transformed emulator output
+should be unbiased relative to posteriors trained on high-fidelity data. This
+task-driven notion of alignment, rather than pointwise reconstruction, is the core
+contribution.
+
+The framework is model-agnostic. The same pipeline applies to N-body particle
+matching across gravity solvers, galaxy alignment across hydrodynamic codes, or any
+pair of simulators that produce catalogs of the same physical objects. Here we
+study the simplest case: halo-to-halo alignment between Quijote N-body simulations
+and CHARM emulator outputs, run from shared initial conditions so that catalogs
+correspond approximately object by object. We align object positions only.
+Velocity, mass, structural features, and the fully unpaired setting are left to
+future work.
+
+\paragraph{Problem setup.}
+We work with paired suites of halo catalogs spanning cosmological parameters
+$\theta \in \mathbb{R}^m$ (for example $\Omega_m$ and $\sigma_8$). The high-fidelity
+(HF) catalogs $\{\mathbf{X}_i\}$ come from the Quijote high-resolution latin
+hypercube \cite{villaescusa2020quijote}. The low-fidelity (LF) catalogs
+$\{\mathbf{X}'_i\}$ come from CHARM \cite{pandey2025creating}. The two suites have
+different halo counts per catalog and per-halo features $d$ (position, velocity,
+mass, structure), and outputs are permutation-invariant with respect to halo
+ordering. Because both suites share initial conditions, halos correspond
+approximately object by object. We voxelise each catalog onto a common real-space
+grid, so each suite becomes a set of halo count fields. We seek a mapping $f_\psi$
+from LF to HF count fields such that posteriors trained on $f_\psi(\mathbf{X}'_i)$
+are unbiased relative to posteriors trained on $\{\mathbf{X}_i\}$ directly. CHARM
+matches Quijote's spatial summary statistics to about $10\%$, but this residual
+mismatch is a distribution shift that biases posteriors trained on
+$\{\mathbf{X}'_i\}$ and evaluated on $\{\mathbf{X}_i\}$.
+
+\section{Method}
+
+We instantiate $f_\psi$ as a patch-wise, style-conditioned 3D generative
+adversarial network. It maps an LF halo-count field to a super-resolved (SR) field
+at the same spatial resolution.
+
+\paragraph{Patching.}
+Each $128^3$ simulation box is split into a $2\times2\times2$ grid of eight $64^3$
+cores. The generator receives one $64^3$ LF core, with no extra neighbouring
+context, and predicts a corrected core of the same size. The eight outputs tile the
+full box exactly, so reconstruction is direct placement with no averaging or
+overlap. Before entering the network, halo counts $n$ are transformed to model space
+as
+\[
+    y = \log(1+n),
+\]
+and after inference the transform is inverted as
+\[
+    n = \exp(y)-1,
+\]
+with the result clamped to the physical output range.
+
+\paragraph{Generator and discriminator.}
+We use a constant-resolution StyleGAN2-style 3D convolutional network that learns
+a same-resolution residual correction,
+\[
+    \mathrm{SR} = \mathrm{LF} + G_\psi(\mathrm{LF},s,z),
+\]
+where $s\in\mathbb{R}^5$ is the cosmology-conditioning vector
+\[
+    s=(\Omega_m,\Omega_b,h,n_s,\sigma_8),
+\]
+and $z$ denotes the injected noise fields. A $1\times1\times1$ style-modulated
+convolution first projects the single-channel count field into a hidden feature
+representation. Four constant-resolution convolutional blocks follow. Each block
+has two style-modulated $3\times3\times3$ convolutions with periodic padding,
+LeakyReLU activations, and learned-strength noise injection. Each block also has a
+projection whose output contributes to the predicted residual. Style modulation
+conditions the convolutional weights on $s$.
+
+The discriminator $D_\phi$ is conditioned on the same vector $s$. It applies
+style-modulated 3D convolutions with periodic padding and successive
+average-pooling downsampling, followed by a final projection and spatial averaging
+to produce one scalar logit per core.
+
+\paragraph{Training objective.}
+The generator is trained with a weighted combination of adversarial and voxel-wise
+reconstruction losses,
+\[
+    \mathcal{L}_G
+    =
+    \lambda_{\mathrm{adv}}\mathcal{L}_{\mathrm{adv}}
+    +
+    \lambda_{\mathrm{rec}}\mathcal{L}_{\mathrm{rec}},
+\]
+where
+\[
+    \mathcal{L}_{\mathrm{adv}}
+    =
+    \mathbb{E}\!\left[
+        \operatorname{softplus}\!\left(-D_\phi(\mathrm{SR},s)\right)
+    \right],
+    \qquad
+    \mathcal{L}_{\mathrm{rec}}
+    =
+    \mathbb{E}\!\left[
+        \|\mathrm{SR}-\mathrm{HF}\|_1
+    \right].
+\]
+We use $\lambda_{\mathrm{adv}}=1$ and $\lambda_{\mathrm{rec}}=2$. The discriminator
+is optimised with the matching non-saturating logistic GAN objective and a lazy
+$R_1$ gradient penalty with $\lambda_{R_1}=10$, applied every 16 discriminator
+updates. No power-spectrum loss is used in the current model; we return to this
+choice in \S\ref{sec:pk}.
+
+Both networks use Adam with learning rate $10^{-4}$ and
+$(\beta_1,\beta_2)=(0,0.99)$, with the gradient norm clipped to $1$. Training runs
+for 30 epochs over 1600 training simulations. One simulation, meaning its eight
+$64^3$ cores, forms each optimisation batch.
+
+\paragraph{Inference and stitching.}
+At inference, the LF $128^3$ count field is transformed to model space and split
+into eight cores. Each core is processed independently by $G_\psi$ with a fixed
+seeded noise realisation. The cosmology $s$ is not known at deployment, so it is set
+to a fiducial value $(0.30, 0.05, 0.70, 1.00, 0.80)$. The output cores are placed
+directly into the full $128^3$ volume, and the stitched model-space field is
+transformed back to physical counts.
+
+\subsection{Baselines}
+
+\textbf{Histogram regression.} A periodic U-Net (circular padding, four
+$8{\to}16{\to}32{\to}64$-feature encoder and decoder stages) trained end to end with
+a voxel-wise Poisson negative log-likelihood on the predicted log-rate. It has no
+adversarial term, no patching, and no cosmology input, and it is applied to the
+full $128^3$ box directly.
+
+\textbf{LF + power modulation.} A non-learned correction. We fit a single
+$k$-binned curve
+$A(k)=\sqrt{\bar P_{\mathrm{HF,train}}(k)/\bar P_{\mathrm{LF,train}}(k)}$ on the
+training split. For any LF field we then apply
+$\delta(x)\to\mathrm{FFT}\to\times A(|k|)\to\mathrm{IFFT}\to
+n(x)=\bar n\,(1+\delta'(x))$, clamped to be non-negative. Rescaling the Fourier
+amplitude of a real field by a real, positive, isotropic $A(k)$ leaves its phase
+unchanged, so this baseline's cross-coherence is identical to raw LF's by
+construction,
+\begin{equation}
+    r_{\mathrm{powermod}}(k)
+    =
+    \frac{A(k)\,P_{\mathrm{LF,HF}}(k)}{\sqrt{A(k)^2 P_{\mathrm{LF}}(k)\,P_{\mathrm{HF}}(k)}}
+    =
+    r_{\mathrm{LF}}(k).
+    \label{eq:powermod}
+\end{equation}
+
+\section{Results}
+
+We test on the CMASS halo suite of $2000$ paired simulations at redshift $z=0.5$.
+Each pair has a low-fidelity field (LF, from CHARM) and a high-fidelity field (HF,
+from Quijote), run from the same initial conditions. Each field is a $128^3$ grid of
+halo counts on a periodic box of side $L=1000\,\mathrm{Mpc}/h$. We split the suite
+into $1600$ train, $200$ validation, and $200$ test simulations. Our model produces
+a super-resolved field $\mathrm{SR}=f_\psi(\mathrm{LF})$. All power spectra are
+computed on the count overdensity $\delta = n/\bar n - 1$.
+
+\subsection{Metrics}
+
+We measure three things: whether SR looks like HF (field statistics), whether SR
+and HF fields come from the same distribution (a two-sample test), and whether SR
+supports the same cosmology posterior as HF (the inference goal).
+
+\paragraph{Power-spectrum statistics.} On $\delta$ we report the power spectrum
+$P(k)$, the transfer function $T(k)=P_X(k)/P_\mathrm{HF}(k)$, and the
+cross-coherence
+$r(k)=P_{X,\mathrm{HF}}(k)/\sqrt{P_X(k)\,P_\mathrm{HF}(k)}$. $T(k)$ says whether a
+field has the right amount of power at scale $k$, and is ideal at $1$. $r(k)$ says
+whether the field has its structure in the right place, cell by cell, and is also
+ideal at $1$. So $T(k)$ checks amplitude and $r(k)$ checks phase. Because every LF
+box is paired with an HF box from the same initial conditions, we can also compute
+the transfer per box and report its root-mean-square (RMS) departure from $1$. This
+per-box error is a stricter test than the median transfer, and we use both.
+
+\paragraph{PQMass.} To test whether two sets of fields share a distribution we use
+PQMass \citep{lemos2024pqmass}. We pool the two sets and, many times over, pick
+$n_r$ random reference points, assign every field to its nearest reference, and
+count how many fields of each set land in each region. From these counts we form
+the statistic
+$\chi^2=\sum_i (\sqrt{N_2/N_1}\,k^{(1)}_i-\sqrt{N_1/N_2}\,k^{(2)}_i)^2/(k^{(1)}_i+k^{(2)}_i)$,
+which follows a $\chi^2_{n_r-1}$ distribution if the two sets share a
+distribution. If they differ, $\chi^2/\mathrm{dof}$ rises above $1$ and the
+per-tessellation $p$-values move toward $0$. We describe each field by its
+one-point count histogram, which is a property of the distribution and is not
+dominated by the large-scale structure that all sources share through their common
+initial conditions.
+
+\paragraph{Cross-fidelity inference consistency (the main metric).} We train a
+neural posterior estimator $q(\theta\mid s)$ on a summary $s$ of one source
+$X\in\{\mathrm{HF},\mathrm{LF},\mathrm{SR}\}$ using the training split, then apply it
+to HF test fields and measure how far its posterior sits from an HF-trained one. We
+report the per-box Gaussian
+$\mathrm{KL}\big(q_\mathrm{HF}(\theta\mid s_\mathrm{HF})\,\Vert\,q_X(\theta\mid s_\mathrm{HF})\big)$,
+averaged over test boxes. A value of $0$ means source $X$ gives the same HF
+posterior. Each estimator is a neural network trained with its own random seed, so
+two estimators both trained on HF still disagree by a small amount. That HF-to-HF
+value is the best score anything can reach, and we call it the floor. We evaluate
+at two levels. At the summary level the input is $s=\log P(k)$, about $30$ numbers.
+At the field level a 3D CNN reads the full $128^3$ field directly.
+
+Two rules keep these numbers honest. First, every estimator is trained several
+times with independent seeds and we report the mean and standard deviation across
+seeds, not a single fit. Second, we check the HF-to-HF floor for every pair of
+seeds. In our summary-level runs, one of five seeds produced a broken estimator
+whose floor jumped from about $0.03$ to about $0.5$ against every other seed. That
+seed is excluded from all summary-level numbers below. Roughly one in five
+estimator fits fails this way, so no single cross-fidelity number should be quoted
+to two decimals without this check.
+
+\subsection{Field statistics: SR fixes the phase, not the amplitude}
+\label{sec:pk}
+
+Figure~\ref{fig:pkpanel} shows the per-patch power spectrum, transfer, and
+cross-coherence for HF, LF, and SR. The transfer panel uses a linear axis centred on
+$1$ and shows the 16th to 84th percentile band for both LF and SR, so a
+ten-percent error is visible as a ten-percent offset.
+
+\paragraph{Amplitude.} On the median, both LF and SR track the HF amplitude at all
+scales. But the median hides the per-box error. Figure~\ref{fig:perbox} shows the
+transfer per box, paired against the HF box from the same initial conditions, over
+the $1600$ training boxes. The per-box RMS error of $P(k)$ against HF is $12.1\%$
+for LF and $13.5\%$ for SR. SR does not reduce the error of the LF input, and it
+beats LF on only $26\%$ of boxes. On the full $128^3$ box, the SR median transfer
+sits at $0.90$ to $0.97$ for $k<0.1$, a systematic $5$ to $10\%$ deficit of
+large-scale power, while LF sits slightly above $1$. Part of the per-box error is
+high-$k$ shot noise that no model can remove, but SR removes none of the structured
+part either. The cause is simple: the current model has no power-spectrum term in
+its loss, so nothing pulls the per-box transfer toward $1$. The absolute RMS numbers
+depend on the $k$-binning and the number of boxes, so we quote only the robust
+statement: SR does not reduce the per-box power-spectrum error of LF.
+
+\paragraph{Phase.} The picture is different for the cross-coherence. SR stays
+correlated with HF at all scales, with $r(k)\gtrsim 0.5$ even near the Nyquist
+frequency, while raw LF loses its correlation with HF at small scales and falls to
+$r\approx 0$. SR puts small-scale structure back in the right place, which LF had
+lost. This is the one field-level statistic where SR clearly improves on its input,
+and it is the one that matters for the field-level inference result below.
+
+\paragraph{Averaging samples does not help.} A natural idea is to average several
+SR draws to form a posterior-mean field. We generated $10$ noise draws per patch
+and averaged them (Fig.~\ref{fig:sampleavg}). The averaged field is identical to a
+single draw: $T(k)$ and $r(k)$ change by less than $10^{-4}$ at every $k$. The
+reason is that the generator is deterministic in practice. Its learned
+noise-injection strengths are about $2\times10^{-4}$, compared with a
+convolution-weight scale of about $0.02$, and the rounded output is bit-identical
+across noise draws. We return to this in \S\ref{sec:pqmass}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.62\linewidth]{figures_cmass/pk_panel_patch_cmassAfix.png}
+\caption{Per-patch power spectrum (top), transfer $T(k)=P_X/P_\mathrm{HF}$ on a
+linear axis (middle), and cross-coherence $r(k)$ (bottom) for HF, LF, and SR, median
+over $16$ test simulations with 16th to 84th percentile bands for both LF and SR.
+The legend reports the RMS of $T(k)-1$. SR and LF have similar amplitude error, and
+SR's scatter is no tighter than LF's. Only SR stays coherent with HF at small
+scales. LF falls to $r\approx 0$.}
+\label{fig:pkpanel}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures_cmass/pk_transfer_perbox_honest.png}
+\caption{Per-box transfer against the paired HF box over $1600$ training
+simulations. Left: median and 16th to 84th percentile band for LF and SR on a
+linear axis. SR sits below $1$ for $k<0.1$. Right: histogram of the per-box RMS
+power-spectrum error. SR ($13.5\%$) does not reduce the LF error ($12.1\%$).}
+\label{fig:perbox}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.62\linewidth]{figures_cmass/pk_panel_patch_sampleavg_cmassAfix.png}
+\caption{Same panel as Fig.~\ref{fig:pkpanel} with SR shown as a single noise draw
+and as the mean over $10$ draws. The two SR curves lie exactly on top of each other
+in all three panels: the generator has no sample diversity to average over.}
+\label{fig:sampleavg}
+\end{figure}
+
+\subsection{Cross-fidelity: SR makes field-level inference transfer}
+
+Table~\ref{tab:crossfid} and Fig.~\ref{fig:crossfid} give the main metric with
+seed-to-seed error bars. We show three sources: raw LF, our deployed SR (the
+cosmology-conditioned generator run with the fiducial $s$), and an unconditioned SR
+variant trained with uninformative cosmology labels, which we use in the ablation
+of \S\ref{sec:ablation}.
+
+\paragraph{Field level.} A posterior trained on SR fields transfers to HF at or
+near the floor, for both SR variants. A posterior trained on raw LF fields fails,
+and fails unstably: its mean KL is more than ten times the floor and its standard
+deviation exceeds its mean. Doubling the number of LF seeds did not shrink this
+spread, so the instability is intrinsic. Some LF-trained networks transfer
+acceptably and others break, with KL up to about $2$. The reason is that the raw LF
+field is out of distribution for a field-level network, so the LF-trained posterior
+gets the point estimate roughly right on HF but the posterior shape wrong. SR moves
+the field into the HF distribution and makes the transfer reliable. This is the
+main positive result: the correction unlocks field-level inference that raw LF does
+not support.
+
+\paragraph{Summary level.} On the power spectrum the story reverses. An LF-trained
+summary posterior already sits close to the floor, and SR is worse. The ordering
+LF $<$ SR is robust across seeds, although the SR spread is wide. Two facts explain
+this. First, LF is already HF-like in the two-point amplitude that $P(k)$ measures
+(\S\ref{sec:pk}), so there is little for the correction to fix at this level.
+Second, SR does not just fail to help. It adds a per-box amplitude bias (the
+large-scale deficit of Fig.~\ref{fig:perbox}) and, for the conditioned generator, a
+cosmology-dependent distortion of $P(k)$ that misleads a posterior trained on it.
+\S\ref{sec:ablation} separates these two effects.
+
+\begin{table}[t]
+\centering
+\caption{Cross-fidelity KL to HF, lower is better, mean $\pm$ standard deviation
+across independently trained estimators. Summary level: four healthy NDE seeds,
+one broken seed excluded. Field level: all combinations of HF reference and
+replicate. SR enables field-level transfer that raw LF cannot. At the summary level
+LF is already close to the floor and SR is worse.}
+\label{tab:crossfid}
+\begin{tabular}{lcccc}
+\toprule
+level & LF (raw) & SR (deployed) & SR (unconditioned) & HF floor \\
+\midrule
+summary $P(k)$ & $\mathbf{0.049\pm0.004}$ & $0.160\pm0.036$ & $0.121\pm0.036$ & $0.030\pm0.005$ \\
+field (3D CNN) & $0.47\pm0.78$ & $\mathbf{0.037\pm0.014}$ & $\mathbf{0.022\pm0.010}$ & $0.019$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures_cmass/crossfid_honest_cmass.png}
+\caption{Cross-fidelity KL to HF (log scale) at the summary and field levels, with
+the HF-to-HF floor as the dashed line. Bars are the mean over seeds, error bars the
+standard deviation, and dots the individual seeds at the summary level. SR reaches
+the floor at the field level while raw LF fails with a spread larger than its mean.
+At the summary level LF is near the floor and SR is worse.}
+\label{fig:crossfid}
+\end{figure}
+
+\subsection{A distribution test, and why SR fails it}
+\label{sec:pqmass}
+
+PQMass on the one-point count histogram (Fig.~\ref{fig:pqmass}, $200$ validation
+boxes) is a useful stress test. Raw LF cannot be told apart from HF
+($\chi^2/\mathrm{dof}=0.83$, with $12\%$ of tessellations rejected at $p<0.05$), but
+SR can be ($\chi^2/\mathrm{dof}=2.2$, $64\%$ rejected). So even though SR matches the
+mean power spectrum and improves the cross-coherence, the distribution of its count
+statistics differs from that of real halo counts. The gap is real but small: with
+$60$ boxes SR sits inside the null bracket, and it takes about $200$ boxes to
+separate it.
+
+We ran two probes to find the cause. The first tests whether the problem is how
+counts are produced (Fig.~\ref{fig:disc}). From one continuous generator output we
+built three count fields: the raw continuous rate, the rounded field we deploy, and
+a Poisson draw from the rate. Rounding changes nothing. The continuous and rounded
+fields have the same one-point histogram (L1 distance to HF $0.0103$, versus
+$0.0102$ for LF), the same PQMass score ($2.37$ versus $2.30$), and the same
+transfer. Poisson sampling makes everything worse: PQMass rises to $30$, the
+histogram distance grows tenfold, and the transfer climbs to $1.7$ at high $k$
+because the draw adds white shot noise on top of a field that already contains the
+clustered counts. The generator reproduces the count field directly, not a latent
+rate, so a Poisson output head is the wrong fix and de-rounding is no fix at all.
+
+The second probe measures the generator's sample variance
+(Fig.~\ref{fig:samplevar}). Across $12$ noise draws per box the deployed SR field
+does not change: the per-voxel standard deviation across draws is $0.00\%$ of the
+mean, and the transfer band across draws is about $4000$ times thinner than the
+band across boxes. The $L_1$ reconstruction term has driven the learned noise
+strength to zero, so the generator outputs a single smoothed field per input.
+
+Together these say the same thing. The mean one-point histogram of SR matches HF as
+well as LF does, yet PQMass rejects it, so the mismatch is in the box-to-box spread
+of the count statistics, not in their mean. A deterministic generator trained to a
+mean-seeking loss is under-dispersed: it cannot reproduce the scatter that real
+fields have from one realisation to the next. The lever is a distribution-matching
+objective that restores stochastic scatter, not a different output head. This is
+exactly the thesis of the paper, and the probes make the case for it directly.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures_cmass/pqmass_Afix_fiducial.png}
+\caption{PQMass two-sample test on the one-point count histogram, $200$ validation
+boxes. Left: $\chi^2$ per tessellation against the null $\chi^2_{9}$ (dashed).
+Right: $p$-values, which are uniform if the distributions match. LF matches HF;
+SR is distinguishable.}
+\label{fig:pqmass}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures_cmass/discretization_Afix_fiducial.png}
+\caption{Discretisation probe on $200$ validation boxes. From one continuous
+generator output we form the continuous rate, the rounded field we deploy, and a
+Poisson draw. Left: one-point count histogram against HF and LF. Middle: PQMass
+$\chi^2/\mathrm{dof}$ against HF. Right: transfer to HF. Rounding changes nothing;
+Poisson sampling adds shot noise and makes every metric worse.}
+\label{fig:disc}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures_cmass/sample_variance_Afix_fiducial.png}
+\caption{Generator sample variance, $60$ validation boxes and $12$ noise draws
+each. Left: transfer with the band across draws (invisible) and the band across
+boxes. Right: PQMass against HF for SR, LF, and the HF-to-HF floor at this sample
+size. The generator is deterministic in practice, and at $60$ boxes SR is inside the
+null bracket.}
+\label{fig:samplevar}
+\end{figure}
+
+\subsection{Comparison to baselines}
+
+Table~\ref{tab:baselines} and Fig.~\ref{fig:baseline_histreg} compare both
+baselines with LF and HF on the test split. Histogram regression improves the
+cross-coherence over raw LF at every scale we measure, the same qualitative gain
+that $f_\psi$ makes, but it collapses small-scale power ($T(k)\approx0.03$ at
+$k\approx0.29$, versus about $1$ for LF) and fails the PQMass test badly
+($\chi^2/\mathrm{dof}=36.4$ versus $1.1$ for raw LF). Its output is a smooth Poisson
+rate that is never resampled back to discrete counts, so its one-point histogram
+lacks the shot noise that both LF and HF have. This is the same under-dispersion we
+found in SR (\S\ref{sec:pqmass}), in a more severe form. Power modulation, by
+contrast, is statistically indistinguishable from raw LF on PQMass
+($\chi^2/\mathrm{dof}=1.10$), as expected for an amplitude-only transform that
+barely touches the count distribution, and its coherence equals LF's exactly
+(Eq.~\ref{eq:powermod}, Fig.~\ref{fig:baseline_powermod}).
+
+The baselines sharpen the reading of Fig.~\ref{fig:pkpanel}. A transfer near $1$ is
+not evidence of a good correction, because power modulation gets it by construction
+and adds nothing. Raising the cross-coherence is not free, because histogram
+regression gains coherence at a real cost in amplitude and one-point statistics.
+$f_\psi$ is the only method of the three that improves coherence while keeping
+$T(k)$ and the one-point histogram close to LF's. That is what the adversarial and
+$L_1$ terms in $\mathcal{L}_G$ buy over a pointwise regression loss.
+
+\begin{table}[t]
+\centering
+\caption{Non-generative baselines against raw LF on the $200$-simulation test
+split, same field-statistics code as Fig.~\ref{fig:pkpanel}. $T(k)$ and $r(k)$ are
+per patch at $k\approx0.03$ (large scale) and $k\approx0.29$ (small scale, near
+Nyquist). PQMass uses the one-point count histogram with $n_r=10$, so
+$\mathrm{dof}=9$. Note that the LF PQMass values here are on the test split and
+differ slightly from the validation-split values in \S\ref{sec:pqmass}.}
+\label{tab:baselines}
+\begin{tabular}{lccccc}
+\toprule
+Method & $T(k{\approx}0.03)$ & $T(k{\approx}0.29)$ & $r(k{\approx}0.29)$ & PQMass $\chi^2/\mathrm{dof}$ & rejected ($p{<}0.05$) \\
+\midrule
+LF (raw)                    & $1.02$ & $1.02$ & $-0.11$ & $1.11$ & $19\%$ \\
+Histogram regression        & $0.82$ & $0.03$ & $\mathbf{0.20}$ & $36.4$ & $100\%$ \\
+LF + power modulation       & $1.01$ & $0.98$ & $-0.11$ & $1.10$ & $26\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.62\linewidth]{figures_cmass/pk_panel_patch_histreg.png}
+\caption{Histogram-regression baseline against HF and LF, per patch (median over
+test patches, same convention as Fig.~\ref{fig:pkpanel}). The power spectrum tracks
+HF out to $k\approx0.1$ and then collapses. The coherence exceeds raw LF's at every
+scale.}
+\label{fig:baseline_histreg}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.62\linewidth]{figures_cmass/pk_panel_patch_powermod.png}
+\caption{LF + power-modulation baseline against HF and LF, per patch. The transfer
+sits near $1$ by construction. The coherence curve lies exactly on top of raw LF's,
+confirming Eq.~\ref{eq:powermod} numerically.}
+\label{fig:baseline_powermod}
+\end{figure}
+
+\subsection{Ablation: conditioning the generator on cosmology}
+\label{sec:ablation}
+
+Since the goal is cosmological inference, it is natural to ask whether telling
+$f_\psi$ the cosmology $\theta$ helps. We compare the conditioned generator with an
+unconditioned variant trained on uninformative cosmology labels, and we run the
+conditioned generator two ways: with the true $\theta$ of each box (an oracle, not
+available at deployment) and with the fiducial value (the deployed setting).
+
+Conditioning helps field fidelity when the true $\theta$ is supplied. The
+validation power-spectrum RMS drops from $0.104$ (unconditioned) to $0.065$
+(oracle). It does not help the deployment metric. At the field level all three
+variants sit at or near the floor: $0.022$ unconditioned, $0.024$ oracle, $0.037$
+fiducial. The fiducial value is slightly worse than the other two, which is what
+one expects from feeding a fixed prior-mean cosmology to a generator that has
+learned to use it, but the gap is within the seed-to-seed noise. At the summary
+level conditioning hurts: $0.160\pm0.036$ for the deployed generator against
+$0.121\pm0.036$ for the unconditioned one, and the oracle is no better than the
+fiducial. The reason is that the power spectrum is the cosmology channel for a
+summary posterior. A conditioned generator stamps its own imperfect mapping from
+cosmology to $P(k)$ onto SR, and a posterior trained on SR then learns that mapping
+instead of the true one. We conclude that a $\theta$-independent correction is the
+better choice for cross-fidelity deployment, and that the value of the correction is
+the small-scale phase structure it restores, not any cosmology it can be told.
+
+\section{Next Steps}
+
+\paragraph{Restore the power-spectrum loss.} The current model has no
+power-spectrum term, and \S\ref{sec:pk} shows the consequence: SR carries a
+coherent $5$ to $10\%$ large-scale power deficit and does not reduce the per-box
+amplitude error of LF. A coherent deficit is exactly what a $P(k)$-matching term
+fixes. We will re-add a per-patch power-spectrum loss and check that the per-box
+transfer tightens toward $1$ without losing the coherence gain.
+
+\paragraph{Restore stochasticity with a distribution-matching objective.}
+\S\ref{sec:pqmass} shows the generator is deterministic and under-dispersed, and
+that neither de-rounding nor a Poisson head fixes it. The $L_1$ term drives the
+noise strength to zero because a mean prediction minimises it. We will replace or
+reweight it with an objective that matches the distribution of fields rather than
+the mean field, so that the box-to-box scatter of the count statistics matches HF.
+This is the change the paper's thesis predicts, and PQMass gives a direct test of
+whether it works.
+
+\paragraph{Drop cosmology conditioning at deployment.} The ablation shows
+conditioning helps only when the true $\theta$ is known, and hurts the summary
+metric otherwise. The deployed model should be $\theta$-independent.
+
+\paragraph{Redshift conditioning.} Right now we train a separate corrector for each
+snapshot. Conditioning $f_\psi$ on redshift instead would let one model cover all
+of them. Unlike cosmology, $z$ is always known when the model is used, so the
+fiducial-value problem of \S\ref{sec:ablation} does not arise. We plan to train on
+several snapshots, feeding $z$ through the same style pathway, and hold one redshift
+out to test interpolation. We expect the LF to HF gap to be larger at low $z$, where
+structure is more nonlinear, and will report cross-fidelity separately by redshift.
+
+\paragraph{Patch stitching.} We measure $r(k)$ on individual patches, so it does not
+capture seams created when patches are reassembled into the full $128^3$ box. The
+field-level posterior reads the stitched field. Three changes should reduce seams:
+generating overlapping patches and blending them with a smooth window, giving the
+generator extra LF context around each patch, and wrapping patches at the box edge
+to respect the periodic volume. Comparing $r(k)$ per patch against $r(k)$ on the
+stitched field will measure how much stitching costs, and we will report it.
+
+\bibliography{references}
+\bibliographystyle{iclr2026_conference}
+
+\end{document}
