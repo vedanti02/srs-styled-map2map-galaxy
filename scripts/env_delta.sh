@@ -11,4 +11,6 @@ source "$SRS_VENV/bin/activate"
 case $_srs_opts in *e*) set -e;; esac; case $_srs_opts in *u*) set -u;; esac; unset _srs_opts
 export SRS_CMASS_ROOT=${SRS_CMASS_ROOT:-/work/nvme/bdne/vkshirsagar1/cmass-ili}   # read by paths.py
 export PYTHONPATH=$PWD PYTHONUNBUFFERED=1
+# torch otherwise starts one thread per node core (288 on GH200) inside an 8-cpu allocation: ~75x slower NDE training
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-8}}
 mkdir -p logs

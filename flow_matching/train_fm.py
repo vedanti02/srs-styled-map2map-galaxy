@@ -12,10 +12,12 @@ cube-symmetry augmentation; bf16 autocast.
 import argparse, json, os, time
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 
-from flow_matching.data import CountPatchDataset, extract_patch, N_PATCHES, PATCH
+from flow_matching.data import CountPatchDataset, FullBoxDataset, extract_patch, N_PATCHES, PATCH
 from flow_matching.space import ModelSpace
 from flow_matching.interpolant import Interpolant, SOURCES, sample_t, residual_spectrum
 from flow_matching.unet3d import build_unet
@@ -40,6 +42,12 @@ def parse_args():
                         "conditioning, so the minimiser is unchanged (still E[v|x_t,LF]); it re-weights dense "
                         "regions where the under-produced high-count HF voxels live.")
     p.add_argument("--lw-alpha", type=float, default=2.0)
+    p.add_argument("--full-box", action="store_true",
+                   help="train and validate on whole periodic 128^3 boxes instead of 8 independent 64^3 patches")
+    p.add_argument("--roll", action=argparse.BooleanOptionalAction, default=True,
+                   help="full-box only: random periodic shift of each training box (exact symmetry of a periodic box)")
+    p.add_argument("--extra-dir", default="",
+                   help="gan_white source: dir of a deterministic corrector's output sr_{idx}.npy (train and val)")
     # network
     p.add_argument("--base-ch", type=int, default=32)
     p.add_argument("--ch-mult", default="1,2,4,4", help="channel multipliers per level; 1,2,4,4 = 17.4M params (1,2,4,8 = 41.7M)")
@@ -75,16 +83,17 @@ def parse_args():
 
 
 @torch.no_grad()
-def estimate_stats(ds, n_boxes, dequant, device, seed=0):
-    """mean/std of log1p(n_hr+u); sigma_z and residual spectrum of (y_hf - y_lf) on 64^3 patches."""
+def estimate_stats(ds, n_boxes, dequant, device, seed=0, base="lf"):
+    """mean/std of log1p(n_hr+u); sigma_z and residual spectrum of (y_hf - y_base) on 64^3 patches,
+    y_base = LF (default) or the extra corrector field (base="extra", for the gan_white source)."""
     g = torch.Generator(device=device).manual_seed(seed)
     ids = ds.ids[:n_boxes]
     # pass 1: mean/std of the (dequantised) HR log field
     s1 = s2 = cnt = 0.0
     boxes = []
     for idx in ids:
-        lr, hr = ds.load_boxes(idx)
-        boxes.append((lr, hr))
+        lr, hr, *rest = ds.load_boxes(idx)
+        boxes.append((rest[0] if (base == "extra" and rest and rest[0] is not None) else lr, hr))
         h = torch.from_numpy(hr).to(device)
         if dequant:
             h = h + torch.rand(h.shape, device=device, generator=g)
@@ -112,6 +121,17 @@ def estimate_stats(ds, n_boxes, dequant, device, seed=0):
     return space, sigma_z, tab.cpu()
 
 
+def dist_setup():
+    """torchrun / srun+torchrun sets WORLD_SIZE; one process per GPU. Returns (rank, world, local_rank)."""
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    if world <= 1:
+        return 0, 1, 0
+    dist.init_process_group("nccl")
+    rank, local = dist.get_rank(), int(os.environ.get("LOCAL_RANK", "0"))
+    torch.cuda.set_device(local)
+    return rank, world, local
+
+
 def blur3(x):
     """Periodic 3x3x3 mean filter (B,1,D,H,W)."""
     xp = F.pad(x, (1,) * 6, mode="circular")
@@ -123,38 +143,61 @@ def loss_weights(lr_counts, alpha):
     return w / w.mean()
 
 
-def make_loader(ds, args):
-    return DataLoader(ds, batch_size=args.sims_per_batch, shuffle=True, num_workers=args.num_workers,
-                      pin_memory=True, drop_last=True, persistent_workers=args.num_workers > 0)
+def make_loader(ds, args, world=1, rank=0):
+    """world>1: each GPU sees a disjoint 1/world of the boxes per epoch (global batch = world x sims_per_batch)."""
+    sampler = DistributedSampler(ds, num_replicas=world, rank=rank, shuffle=True, drop_last=True) if world > 1 else None
+    return DataLoader(ds, batch_size=args.sims_per_batch, shuffle=sampler is None, sampler=sampler,
+                      num_workers=args.num_workers, pin_memory=True, drop_last=True,
+                      persistent_workers=args.num_workers > 0)
 
 
 @torch.no_grad()
-def validate(net, space, interp, val_ds, args, pk128, device, amp_dtype):
+def validate(net, space, interp, val_ds, args, pk128, device, amp_dtype, world=1, rank=0):
     net.eval()
-    ids = val_ds.ids[:args.val_max_sims] if args.val_max_sims > 0 else val_ds.ids
+    all_ids = val_ds.ids[:args.val_max_sims] if args.val_max_sims > 0 else val_ds.ids
+    ids = all_ids[rank::world]
     acc = {}
     for idx in ids:
-        lr, hr = val_ds.load_boxes(idx)
+        lr, hr, *rest = val_ds.load_boxes(idx)
         srs = generate_box(net, space, interp, lr, device, n_draws=args.val_draws, steps=args.val_steps,
-                           method=args.val_method, seed=idx, cond=args.cond, amp_dtype=amp_dtype)
+                           method=args.val_method, seed=idx, cond=args.cond, amp_dtype=amp_dtype,
+                           full_box=args.full_box, extra_counts=rest[0] if rest else None)
         m = box_metrics(srs, hr, lr, pk128, device)
         for k, v in m.items():
-            acc[k] = acc.get(k, 0.0) + v / len(ids)
+            acc[k] = acc.get(k, 0.0) + v / len(all_ids)      # this rank's share of the mean over all boxes
+    if world > 1:
+        keys = sorted(acc) if acc else ["l1", "l1_mean", "crps", "spread", "cnt_err", "pk_rms"]
+        t = torch.tensor([acc.get(k, 0.0) for k in keys], device=device, dtype=torch.float64)
+        dist.all_reduce(t)
+        acc = dict(zip(keys, t.tolist()))
     return acc
 
 
 def main():
     args = parse_args()
-    torch.manual_seed(args.seed); np.random.seed(args.seed)
+    rank, world, local = dist_setup()
+    main_proc = rank == 0
+    torch.manual_seed(args.seed + rank); np.random.seed(args.seed + rank)
     torch.backends.cudnn.benchmark = True
     os.makedirs(args.ckpt_dir, exist_ok=True)
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dev = torch.device(f"cuda:{local}" if torch.cuda.is_available() else "cpu")
+    if not main_proc:
+        import builtins; builtins.print = lambda *a, **k: None       # log from rank 0 only
     amp_dtype = torch.bfloat16 if (args.amp == "bf16" and dev.type == "cuda") else None
 
-    train_ds = CountPatchDataset("train", pad=0, cache=args.cache, max_sets=args.max_train_sets,
-                                 workers=max(args.num_workers, 4))
-    val_ds = CountPatchDataset("val", pad=0, cache=False)
-    loader = make_loader(train_ds, args)
+    use_extra = args.source == "gan_white"
+    assert not use_extra or args.extra_dir, "--source gan_white needs --extra-dir"
+    args.n_cond = 2 if use_extra else 1
+    if args.full_box:
+        train_ds = FullBoxDataset("train", args.extra_dir if use_extra else None, cache=args.cache,
+                                  max_sets=args.max_train_sets, workers=max(args.num_workers, 4))
+        val_ds = FullBoxDataset("val", args.extra_dir if use_extra else None)
+    else:
+        assert not use_extra, "gan_white is implemented for --full-box only"
+        train_ds = CountPatchDataset("train", pad=0, cache=args.cache, max_sets=args.max_train_sets,
+                                     workers=max(args.num_workers, 4))
+        val_ds = CountPatchDataset("val", pad=0, cache=False)
+    loader = make_loader(train_ds, args, world, rank)
     pk128 = TorchPk(N=128, lbox=args.lbox, n_bins=32, device=dev)
 
     resume_path = args.resume
@@ -168,13 +211,14 @@ def main():
         space = ModelSpace.from_state(ck["space"]); interp = Interpolant.from_state(ck["interp"])
     else:
         t0 = time.time()
-        space, sigma_z, spec_tab = estimate_stats(train_ds, min(args.stats_boxes, len(train_ds)), args.dequant, dev, args.seed)
+        space, sigma_z, spec_tab = estimate_stats(train_ds, min(args.stats_boxes, len(train_ds)), args.dequant, dev, args.seed,
+                                                  base="extra" if use_extra else "lf")
         interp = Interpolant(args.source, sigma_z=sigma_z, sigma_scale=args.sigma_scale,
                              spec_table=spec_tab, grid=PATCH)
         print(f"stats from {min(args.stats_boxes, len(train_ds))} boxes in {time.time()-t0:.0f}s: {space}  sigma_z={sigma_z:.4f}", flush=True)
 
-    net = build_unet(args, in_ch=2 if args.cond else 1).to(dev)
-    ema = EMA(net, args.ema)
+    net = build_unet(args, in_ch=(1 + args.n_cond) if args.cond else 1).to(dev)
+    ema = EMA(net, args.ema)                         # EMA of the plain module (same weights on every rank)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.weight_decay)
     step, start_epoch, best = 0, 0, float("inf")
     if ck is not None:
@@ -182,33 +226,52 @@ def main():
         step, start_epoch = ck["step"], ck["epoch"] + 1
         best = ck.get("best", float("inf")) if ck["args"].get("select") == args.select else float("inf")
         print(f"resumed {resume_path}: epoch {start_epoch} step {step} best={best:.4f}", flush=True)
+    raw_net = net
+    if world > 1:
+        net = DDP(net, device_ids=[local])
 
     n_par = sum(p.numel() for p in net.parameters()) / 1e6
     print(f"FM source={args.source} cond={args.cond} dequant={args.dequant} aug={args.aug} t={args.t_dist}+{args.t_shift} "
           f"loss_weight={args.loss_weight}(alpha={args.lw_alpha}) "
-          f"| UNet {n_par:.1f}M | train sims {len(train_ds)} val sims {len(val_ds)} | patch-batch {args.sims_per_batch*N_PATCHES} | {dev} amp={args.amp}",
+          f"| UNet {n_par:.1f}M | train sims {len(train_ds)} val sims {len(val_ds)} | full_box={args.full_box} roll={args.roll} "
+          f"| batch {args.sims_per_batch * (1 if args.full_box else N_PATCHES)} x {world} GPUs | {dev} amp={args.amp}",
           flush=True)
     print(interp, flush=True)
-    with open(os.path.join(args.ckpt_dir, "args.json"), "w") as f:
-        json.dump(vars(args), f, indent=1)
+    if main_proc:
+        with open(os.path.join(args.ckpt_dir, "args.json"), "w") as f:
+            json.dump(vars(args), f, indent=1)
 
-    g_aug = torch.Generator().manual_seed(args.seed + 1)
+    g_aug = torch.Generator().manual_seed(args.seed + 1 + 1000 * rank)
     for epoch in range(start_epoch, args.epochs):
+        if world > 1:
+            loader.sampler.set_epoch(epoch)
         net.train(); t0 = time.time(); run = 0.0; nrun = 0
-        for it, (lr_c, hr_c, _) in enumerate(loader):
-            B = lr_c.shape[0]
-            lr_c = lr_c.reshape(B * N_PATCHES, 1, PATCH, PATCH, PATCH).to(dev, non_blocking=True)
-            hr_c = hr_c.reshape(B * N_PATCHES, 1, PATCH, PATCH, PATCH).to(dev, non_blocking=True)
+        for it, batch in enumerate(loader):
+            if args.full_box:
+                lr_c, hr_c, ex_c, _ = batch
+                fields = [lr_c.to(dev, non_blocking=True), hr_c.to(dev, non_blocking=True)]
+                if use_extra:
+                    fields.append(ex_c.to(dev, non_blocking=True))
+                if args.roll:   # the box is periodic, so any shift is an exact symmetry
+                    sh = [int(v) for v in torch.randint(0, lr_c.shape[-1], (3,), generator=g_aug)]
+                    fields = [torch.roll(x, shifts=sh, dims=(2, 3, 4)) for x in fields]
+            else:
+                lr_c, hr_c, _ = batch
+                B = lr_c.shape[0]
+                fields = [lr_c.reshape(B * N_PATCHES, 1, PATCH, PATCH, PATCH).to(dev, non_blocking=True),
+                          hr_c.reshape(B * N_PATCHES, 1, PATCH, PATCH, PATCH).to(dev, non_blocking=True)]
             if args.aug != "none":
                 op = random_op(args.aug, g_aug)
-                lr_c, hr_c = apply_op(lr_c, op), apply_op(hr_c, op)
+                fields = [apply_op(x, op) for x in fields]
+            lr_c, hr_c = fields[0], fields[1]
             y_hf = space.forward(hr_c)                    # dequantised target, fresh u each step
             y_lf = space.forward(lr_c, dequant=False)     # exact LF
-            x0 = interp.sample_source(y_lf)
+            y_base = space.forward(fields[2], dequant=False) if use_extra else None
+            x0 = interp.sample_source(y_lf, y_base=y_base)
             t = sample_t(x0.shape[0], args.t_dist, dev, shift=args.t_shift)
             w = loss_weights(lr_c, args.lw_alpha) if args.loss_weight == "lf" else None
             x_t, v_star = interp.path(x0, y_hf, t)
-            cond = y_lf if args.cond else None
+            cond = (torch.cat([y_lf, y_base], dim=1) if use_extra else y_lf) if args.cond else None
 
             # linear LR warm-up
             lr_now = args.lr * min(1.0, (step + 1) / max(1, args.warmup))
@@ -227,33 +290,41 @@ def main():
                 gnorm = torch.nn.utils.clip_grad_norm_(net.parameters(), args.grad_clip).item()
             else:
                 gnorm = 0.0
-            opt.step(); ema.update(net); step += 1
+            opt.step(); ema.update(raw_net); step += 1
             run += loss.item(); nrun += 1
             if (it + 1) % args.log_every == 0:
                 print(f"e{epoch} it{it+1}/{len(loader)} loss={run/nrun:.4f} gnorm={gnorm:.2f} lr={lr_now:.2e} "
                       f"{(time.time()-t0)/(it+1):.2f}s/it", flush=True)
                 run = 0.0; nrun = 0
 
-        vm = validate(ema.shadow, space, interp, val_ds, args, pk128, dev, amp_dtype)
+        vm = validate(ema.shadow, space, interp, val_ds, args, pk128, dev, amp_dtype, world, rank)
         print(f"epoch {epoch} {time.time()-t0:.0f}s STITCHED-128 val: L1/vox={vm['l1']:.4f} L1(mean)={vm['l1_mean']:.4f} "
               f"CRPS={vm['crps']:.4f} spread={vm['spread']:.4f} cnt_err={vm['cnt_err']:+.4f} pkRMS={vm['pk_rms']:.4f}", flush=True)
 
-        st = {"model": net.state_dict(), "ema": ema.state_dict(), "opt": opt.state_dict(), "step": step,
-              "epoch": epoch, "args": vars(args), "space": space.state(), "interp": interp.state(),
-              "val": vm, "best": best}
-        torch.save(st, os.path.join(args.ckpt_dir, "last.pt"))
-        if (epoch + 1) % args.save_every == 0 or epoch + 1 == args.epochs:
-            torch.save(st, os.path.join(args.ckpt_dir, f"epoch_{epoch+1}.pt"))
         vsel = vm[args.select]
-        if vsel < best:
-            best = vsel; st["best"] = best
-            torch.save(st, os.path.join(args.ckpt_dir, "best.pt"))
-            print(f"saved best.pt (val_{args.select}={vsel:.4f})", flush=True)
-        with open(os.path.join(args.ckpt_dir, "val_log.jsonl"), "a") as f:
-            f.write(json.dumps({"epoch": epoch, "step": step, **vm}) + "\n")
-    with open(os.path.join(args.ckpt_dir, "TRAIN_DONE"), "w") as f:
-        f.write(f"epochs={args.epochs} step={step} best_{args.select}={best:.5f}\n")
+        is_best = vsel < best                        # identical on every rank (all-reduced metrics)
+        if is_best:
+            best = vsel
+        if main_proc:
+            st = {"model": raw_net.state_dict(), "ema": ema.state_dict(), "opt": opt.state_dict(), "step": step,
+                  "epoch": epoch, "args": vars(args), "space": space.state(), "interp": interp.state(),
+                  "val": vm, "best": best}
+            torch.save(st, os.path.join(args.ckpt_dir, "last.pt"))
+            if (epoch + 1) % args.save_every == 0 or epoch + 1 == args.epochs:
+                torch.save(st, os.path.join(args.ckpt_dir, f"epoch_{epoch+1}.pt"))
+            if is_best:
+                torch.save(st, os.path.join(args.ckpt_dir, "best.pt"))
+                print(f"saved best.pt (val_{args.select}={vsel:.4f})", flush=True)
+            with open(os.path.join(args.ckpt_dir, "val_log.jsonl"), "a") as f:
+                f.write(json.dumps({"epoch": epoch, "step": step, **vm}) + "\n")
+        if world > 1:
+            dist.barrier()
+    if main_proc:
+        with open(os.path.join(args.ckpt_dir, "TRAIN_DONE"), "w") as f:
+            f.write(f"epochs={args.epochs} step={step} best_{args.select}={best:.5f}\n")
     print("TRAIN_DONE", flush=True)
+    if world > 1:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

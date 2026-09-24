@@ -57,7 +57,7 @@ def _collect_pk_theta(pk_dir, stitched_root, snap="PART_009", theta_npz=None):
 
 def train_nde(pk_dir, stitched_root, out_path, n_train=None,
               theta_low=0.0, theta_high=1.5, hidden=64, num_transforms=5, theta_npz=None,
-              drop_empty_bins=True, seed=None):
+              drop_empty_bins=True, seed=None, max_epochs=100):
     if not SBI_AVAILABLE:
         raise RuntimeError("sbi not installed — pip install sbi")
     if seed is not None:
@@ -81,7 +81,7 @@ def train_nde(pk_dir, stitched_root, out_path, n_train=None,
 
     inferer = SNPE_C(prior=prior, density_estimator="nsf")
     inferer.append_simulations(torch.from_numpy(Y), torch.from_numpy(X))
-    posterior_net = inferer.train(max_num_epochs=100, training_batch_size=64)
+    posterior_net = inferer.train(max_num_epochs=max_epochs, training_batch_size=64)
     posterior = inferer.build_posterior(posterior_net)
     if drop_empty_bins:
         posterior.srs_keep = keep       # read by evaluate._sample to slice x the same way
@@ -106,10 +106,11 @@ def main():
     p.add_argument("--keep-empty-bins", dest="drop_empty_bins", action="store_false",
                    help="old (pre-Delta) protocol: keep the zero-mode k-bins as 32-dim input")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--max-epochs", type=int, default=100, help="sbi still stops early if validation loss stalls for 20 epochs")
     args = p.parse_args()
     train_nde(args.pk_dir, args.stitched_root, args.out,
               n_train=args.n_train, theta_low=args.theta_low, theta_high=args.theta_high,
-              theta_npz=args.theta_npz or None, drop_empty_bins=args.drop_empty_bins, seed=args.seed)
+              theta_npz=args.theta_npz or None, drop_empty_bins=args.drop_empty_bins, seed=args.seed, max_epochs=args.max_epochs)
 
 
 if __name__ == "__main__":

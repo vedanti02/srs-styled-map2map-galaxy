@@ -28,6 +28,10 @@ def parse_args():
     p.add_argument("--lowk-kc", type=int, default=0,
                    help="diagnostic: copy LF modes with |k| < kc (box fundamental units) into the output")
     p.add_argument("--max-sims", type=int, default=0)
+    p.add_argument("--full-box", action="store_true", help="sample the whole periodic 128^3 box at once (no patches); "
+                   "always on for models trained with --full-box")
+    p.add_argument("--extra-dir", default="", help="gan_white models: dir of the corrector output sr_{idx}.npy")
+    p.add_argument("--shard", default="0/1", help="i/n: this process takes every n-th box starting at i (parallel jobs)")
     p.add_argument("--decode-shift", type=float, default=0.0,
                    help="dequantised models: n = floor(z - shift); calibrated ~0.07 for fm_gauss (see diag_decoder)")
     p.add_argument("--amp", default="bf16", choices=["none", "bf16"])
@@ -48,14 +52,16 @@ def main():
     print(f"sample: ckpt={a.ckpt} epoch={ck.get('epoch')} {interp} {space} cond={args['cond']} | "
           f"{len(ds)} {a.split} boxes x {a.n_draws} draws | {a.method} {a.steps} steps | lowk_kc={a.lowk_kc} decode_shift={a.decode_shift}", flush=True)
     t0 = time.time(); n_done = 0
-    for n, idx in enumerate(ds.ids):
+    si, sn = (int(v) for v in a.shard.split("/"))
+    for n, idx in enumerate(ds.ids[si::sn]):
         names = [f"{a.out}/sr_{idx}.npy"] + [f"{a.out}/sr_{idx}_d{k}.npy" for k in range(1, a.n_draws)]
         if all(os.path.exists(f) for f in names):
             continue
         lr, _ = ds.load_boxes(idx)
+        ex = np.load(f"{a.extra_dir}/sr_{idx}.npy").astype(np.float32)[None] if a.extra_dir else None
         srs = generate_box(net, space, interp, lr, dev, n_draws=a.n_draws, steps=a.steps, method=a.method,
                            seed=a.base_seed * 7_919 + idx, cond=args["cond"], lowk_kc=a.lowk_kc, amp_dtype=amp_dtype,
-                           decode_shift=a.decode_shift, sde_gamma=a.sde_gamma)
+                           decode_shift=a.decode_shift, sde_gamma=a.sde_gamma, full_box=a.full_box or bool(args.get("full_box", False)), extra_counts=ex)
         for f, sr in zip(names, srs):
             np.save(f, np.clip(sr[0], 0, 255).astype(np.uint8))
         link = f"{a.out}/set{idx}_transformed.npy"

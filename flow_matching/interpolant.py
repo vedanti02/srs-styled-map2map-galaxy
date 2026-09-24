@@ -11,6 +11,10 @@ Sources (the main ablation axis):
   lf_spectral : x0 = y_lf + s * C eps         C colours white noise to the residual power
                                               spectrum of (y_hf - y_lf); large scales are
                                               left at their LF values
+  gan_white   : x0 = y_gan + s * sigma_z eps  start from a deterministic corrector's output (the GAN
+                                              "best guess"); sigma_z = RMSE(y_hf - y_gan). The flow
+                                              only adds the part the best guess cannot predict
+                                              (CorrDiff 2309.15214 / SFM 2410.19814 style).
 `s` is --sigma-scale (1.0 = paper value). With s = 0 the flow from LF is a deterministic
 map and can only return ONE field per LF, i.e. the GAN's failure mode by another route.
 
@@ -18,7 +22,7 @@ Samplers integrate dx/dt = v_theta from t=0 to t=1 (Euler, or Heun = 2nd order).
 """
 import torch
 
-SOURCES = ("gaussian", "lf_white", "lf_spectral")
+SOURCES = ("gaussian", "lf_white", "lf_spectral", "gan_white")
 
 
 def shell_index(n: int, device=None):
@@ -42,9 +46,18 @@ def residual_spectrum(residuals: torch.Tensor):
     return s / c.clamp_min(1.0)
 
 
-def amp_grid_from_table(table: torch.Tensor, n: int):
-    idx = shell_index(n, table.device).clamp_max(len(table) - 1)
-    return torch.sqrt(table[idx] / float(n ** 3))
+def amp_grid_from_table(table: torch.Tensor, n: int, grid: int = None):
+    """table was measured on grid^3 patches. For an n^3 input covering n/grid times the patch length
+    (e.g. the full 128^3 box vs 64^3 patches), look the table up at the same PHYSICAL k (shell index
+    scaled by grid/n) and keep the patch normalisation grid^3, so the coloured noise has the same
+    power spectrum and per-voxel variance as on patches. grid=None or grid==n: original behaviour."""
+    grid = n if grid is None else grid
+    idx = shell_index(n, table.device)
+    if grid != n:
+        # waves longer than a patch have no entry in the patch table: use its longest real wave
+        # (shell 1), never shell 0, which is the patch-mean term; the true k=0 term stays 0.
+        idx = torch.where(idx > 0, torch.round(idx.float() * grid / n).long().clamp_min(1), idx)
+    return torch.sqrt(table[idx.clamp_max(len(table) - 1)] / float(grid ** 3))
 
 
 class Interpolant:
@@ -71,7 +84,7 @@ class Interpolant:
 
     def _amp_for(self, n, device):
         if self._amp is None or self._amp.shape[-1] != n or self._amp.device != device:
-            self._amp = amp_grid_from_table(self.spec_table.to(device), n)
+            self._amp = amp_grid_from_table(self.spec_table.to(device), n, self.grid)
         return self._amp
 
     def colour(self, eps: torch.Tensor) -> torch.Tensor:
@@ -79,8 +92,11 @@ class Interpolant:
         fk = torch.fft.fftn(eps.float(), dim=(-3, -2, -1)) * amp
         return torch.fft.ifftn(fk, dim=(-3, -2, -1)).real.to(eps.dtype)
 
-    def sample_source(self, y_lf: torch.Tensor, generator=None) -> torch.Tensor:
+    def sample_source(self, y_lf: torch.Tensor, generator=None, y_base=None) -> torch.Tensor:
         eps = torch.randn(y_lf.shape, device=y_lf.device, dtype=y_lf.dtype, generator=generator)
+        if self.source == "gan_white":
+            assert y_base is not None, "gan_white needs the corrector output (y_base)"
+            return y_base + self.sigma_scale * self.sigma_z * eps
         if self.source == "gaussian":
             return self.sigma_scale * eps      # sigma_scale = sampling "temperature" (1.0 = as trained)
         if self.source == "lf_white":

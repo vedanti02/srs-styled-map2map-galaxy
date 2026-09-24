@@ -39,7 +39,7 @@ def build_from_ckpt(ck, device):
     a = ck["args"]
     space = ModelSpace.from_state(ck["space"])
     interp = Interpolant.from_state(ck["interp"])
-    net = build_unet(a, in_ch=2 if a["cond"] else 1).to(device)
+    net = build_unet(a, in_ch=(1 + int(a.get("n_cond", 1))) if a["cond"] else 1).to(device)
     sd = ck["ema"]["model"] if ("ema" in ck and ck["ema"] is not None) else ck["model"]
     net.load_state_dict(sd)
     net.eval()
@@ -57,20 +57,35 @@ def make_v_fn(net, cond, amp_dtype=None):
 
 @torch.no_grad()
 def generate_box(net, space, interp, lr_counts, device, n_draws=1, steps=32, method="heun",
-                 seed=0, cond=True, lowk_kc=0, amp_dtype=None, return_model_space=False, decode_shift=0.0, sde_gamma=1.0):
+                 seed=0, cond=True, lowk_kc=0, amp_dtype=None, return_model_space=False, decode_shift=0.0, sde_gamma=1.0,
+                 full_box=False, extra_counts=None):
     """lr_counts: (1,128,128,128) float32 physical LF counts (pad=0 protocol).
+    full_box: run the (fully convolutional, circularly padded) net on the whole periodic box at once
+    instead of 8 independent 64^3 patches, so large scales and patch faces see correct context.
+    extra_counts: (1,128,128,128) output of a deterministic corrector; required by the gan_white source
+    (it is both the flow's starting point and a second conditioning channel).
     -> list of n_draws (1,128,128,128) float32 count cubes (integers), plus optional model-space cubes."""
-    lr_p = torch.from_numpy(np.stack([extract_patch(lr_counts, p, 0) for p in range(N_PATCHES)])).to(device)
+    if full_box:
+        lr_p = torch.from_numpy(np.asarray(lr_counts, np.float32)[None]).to(device)   # (1,1,128,128,128)
+    else:
+        lr_p = torch.from_numpy(np.stack([extract_patch(lr_counts, p, 0) for p in range(N_PATCHES)])).to(device)
     y_lf = space.forward(lr_p, dequant=False)                      # exact transform for conditioning/source
-    v_fn = make_v_fn(net, y_lf if cond else None, amp_dtype)
+    y_base = None
+    if interp.source == "gan_white":
+        assert extra_counts is not None, "gan_white needs extra_counts (the GAN output)"
+        ex = np.asarray(extra_counts, np.float32)
+        ex_p = ex[None] if full_box else np.stack([extract_patch(ex, p, 0) for p in range(N_PATCHES)])
+        y_base = space.forward(torch.from_numpy(ex_p).to(device), dequant=False)
+    cond_t = (torch.cat([y_lf, y_base], dim=1) if y_base is not None else y_lf) if cond else None
+    v_fn = make_v_fn(net, cond_t, amp_dtype)
     outs, outs_model = [], []
     for d in range(n_draws):
         g = torch.Generator(device=device).manual_seed(int(seed) * 1_000_003 + d)
-        x0 = interp.sample_source(y_lf, generator=g)
+        x0 = interp.sample_source(y_lf, generator=g, y_base=y_base)
         x1 = integrate(v_fn, x0, steps, method, sde_gamma=sde_gamma, generator=g)  # (8,1,64,64,64) model space
-        box_m = stitch_torch(x1)                                    # (1,128^3)
+        box_m = x1[0] if full_box else stitch_torch(x1)             # (1,128^3)
         if lowk_kc > 0:
-            box_m = project_lowk(box_m, stitch_torch(y_lf), lowk_kc)
+            box_m = project_lowk(box_m, y_lf[0] if full_box else stitch_torch(y_lf), lowk_kc)
         outs.append(space.inverse(box_m, decode_shift).cpu().numpy())
         if return_model_space:
             outs_model.append(box_m.cpu().numpy())

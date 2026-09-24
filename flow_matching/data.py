@@ -15,7 +15,7 @@ from torch.utils.data import Dataset
 from data.patch_dataset_cmass import (PatchPairDatasetCmass, extract_patch, stitch_patches,
                                       crop_interior, PATCH, N_PATCHES, N_FULL, N_SPLIT, PROCESSED)
 
-__all__ = ["CountPatchDataset", "extract_patch", "stitch_patches", "crop_interior",
+__all__ = ["CountPatchDataset", "FullBoxDataset", "extract_patch", "stitch_patches", "crop_interior",
            "stitch_torch", "PATCH", "N_PATCHES", "N_FULL", "PROCESSED"]
 
 
@@ -82,3 +82,50 @@ class CountPatchDataset(Dataset):
         lr_p = np.stack([extract_patch(lr, p, self.pad) for p in range(N_PATCHES)])
         hr_p = np.stack([extract_patch(hr, p, 0) for p in range(N_PATCHES)])
         return torch.from_numpy(lr_p), torch.from_numpy(hr_p), idx
+
+
+class FullBoxDataset(Dataset):
+    """Whole periodic 128^3 boxes, no patching. Optional third field per box (e.g. a deterministic
+    corrector's output) read from <extra_dir>/sr_{idx}.npy. __getitem__ -> (lr, hr, extra, idx), each
+    (1,128,128,128) float32 counts; extra is an empty tensor when extra_dir is None."""
+
+    def __init__(self, split="train", extra_dir=None, cache=False, max_sets=0, workers=8, verbose=True):
+        self.base = CountPatchDataset(split, pad=0, cache=False, max_sets=max_sets, verbose=False)
+        self.ids = self.base.ids
+        self.theta = self.base.theta
+        self.extra_dir = extra_dir or None
+        self.cache = None
+        if cache:
+            n = len(self.ids); nf = 3 if self.extra_dir else 2
+            buf = np.empty((nf, n, N_FULL, N_FULL, N_FULL), np.uint8); t0 = time.time()
+
+            def load(j):
+                for f_, a in enumerate(self._load(self.ids[j])[:nf]):
+                    buf[f_, j] = np.clip(a[0], 0, 255).astype(np.uint8)
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                list(ex.map(load, range(n)))
+            self.cache = buf
+            if verbose:
+                print(f"cached {n} full boxes x {nf} fields ({buf.nbytes/1e9:.1f} GB) in {time.time()-t0:.0f}s", flush=True)
+
+    def __len__(self):
+        return len(self.ids)
+
+    def _load(self, idx):
+        lr, hr = self.base.load_boxes(idx)
+        ex = np.load(f"{self.extra_dir}/sr_{idx}.npy").astype(np.float32)[None] if self.extra_dir else None
+        return lr, hr, ex
+
+    def load_boxes(self, idx):
+        """-> (lr, hr, extra or None), each (1,128,128,128) float32 counts."""
+        if self.cache is not None:
+            j = self.ids.index(idx)
+            out = [self.cache[f_, j].astype(np.float32)[None] for f_ in range(self.cache.shape[0])]
+            return out[0], out[1], (out[2] if len(out) > 2 else None)
+        return self._load(idx)
+
+    def __getitem__(self, k):
+        idx = self.ids[k]
+        lr, hr, ex = self.load_boxes(idx)
+        ex_t = torch.from_numpy(ex) if ex is not None else torch.zeros(0)
+        return torch.from_numpy(lr), torch.from_numpy(hr), ex_t, idx
