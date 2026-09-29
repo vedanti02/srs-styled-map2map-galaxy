@@ -24,14 +24,14 @@ def xfid(qh,qx,n=1500):
 print("\nper-seed summary cross-fid KL (q_source seed s vs q_HR seed s):",flush=True)
 for tag in TAGS:
     vals=[]
-    for s in range(5):
+    for s in range(16):
         qh,qx=q("hr",s),q(tag,s)
         if qh is None or qx is None: continue
         torch.manual_seed(1000+s); vals.append(xfid(qh,qx))
     vals=np.array(vals)
     print(f"  {tag:8s}: {np.round(vals,3).tolist()}  -> mean {vals.mean():.3f} +/- {vals.std():.3f}",flush=True)
 fl=[]
-for i in range(5):
+for i in range(16):
     for j in range(i+1,5):
         qi,qj=q("hr",i),q("hr",j)
         if qi is None or qj is None: continue

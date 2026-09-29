@@ -16,7 +16,7 @@ export PYTHONPATH=$PWD PYTHONUNBUFFERED=1
 # The restored pre-Delta posteriors (32-dim input, unseeded) live in runs/patch_cmass/_robust_tmp.
 NDEDIR=${NDEDIR:-runs/patch_cmass/nde_v2}
 mkdir -p "$NDEDIR"
-for i in 0 1 2 3; do
+for i in ${SEEDS:-0 1 2 3}; do
   echo "=== $TAG replicate $i (fresh process, CORRECTED labels) ==="
   python -m inference.nde --pk-dir runs/patch_cmass/${PKDIR} \
      --theta-npz data/cmass_theta.npz \

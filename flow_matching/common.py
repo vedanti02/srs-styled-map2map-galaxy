@@ -46,6 +46,30 @@ def build_from_ckpt(ck, device):
     return net, space, interp, a
 
 
+def lowk_taper(n, lbox, k1, k2, device):
+    """rfftn-grid weight: 1 for k < k1, cosine taper to 0 at k2, 0 above; 0 at k = 0."""
+    f = torch.fft.fftfreq(n, d=lbox / n, device=device) * 2 * np.pi
+    fz = torch.fft.rfftfreq(n, d=lbox / n, device=device) * 2 * np.pi
+    k = torch.sqrt(f[:, None, None] ** 2 + f[None, :, None] ** 2 + fz[None, None, :] ** 2)
+    w = torch.where(k < k1, torch.ones_like(k), 0.5 * (1 + torch.cos(np.pi * (k - k1) / (k2 - k1))))
+    w = torch.where(k >= k2, torch.zeros_like(k), w)
+    w[0, 0, 0] = 0.0
+    return w
+
+
+def make_lowk_guided(v_fn, y_ref, lowk_guide, lbox):
+    k1, k2 = lowk_guide
+    w = lowk_taper(y_ref.shape[-1], lbox, k1, k2, y_ref.device)
+    def v_guided(x, t):
+        v = v_fn(x, t)
+        omt = (1.0 - t).view(-1, *([1] * (x.dim() - 1))).to(x.dtype)
+        x1_hat = x + omt * v
+        d = torch.fft.irfftn(torch.fft.rfftn((x1_hat - y_ref).float(), dim=(-3, -2, -1)) * w,
+                             s=x.shape[-3:], dim=(-3, -2, -1)).to(x.dtype)
+        return v - d / omt
+    return v_guided
+
+
 def make_v_fn(net, cond, amp_dtype=None):
     def v_fn(x, t):
         if amp_dtype is not None:
@@ -58,10 +82,14 @@ def make_v_fn(net, cond, amp_dtype=None):
 @torch.no_grad()
 def generate_box(net, space, interp, lr_counts, device, n_draws=1, steps=32, method="heun",
                  seed=0, cond=True, lowk_kc=0, amp_dtype=None, return_model_space=False, decode_shift=0.0, sde_gamma=1.0,
-                 full_box=False, extra_counts=None):
+                 full_box=False, extra_counts=None, lowk_guide=None, lbox=1000.0):
     """lr_counts: (1,128,128,128) float32 physical LF counts (pad=0 protocol).
     full_box: run the (fully convolutional, circularly padded) net on the whole periodic box at once
     instead of 8 independent 64^3 patches, so large scales and patch faces see correct context.
+    lowk_guide: (k1, k2) in h/Mpc, full box only. At every integration step the predicted end point
+    x1_hat = x + (1-t) v has its Fourier modes with k < k1 set to the LR field's, tapering (cosine) to no
+    change at k2; the velocity is corrected to match (data-consistency projection, cf. DDNM arXiv 2212.00490).
+    The k = 0 mode (box mean, i.e. total halo count) is never touched.
     extra_counts: (1,128,128,128) output of a deterministic corrector; required by the gan_white source
     (it is both the flow's starting point and a second conditioning channel).
     -> list of n_draws (1,128,128,128) float32 count cubes (integers), plus optional model-space cubes."""
@@ -78,6 +106,9 @@ def generate_box(net, space, interp, lr_counts, device, n_draws=1, steps=32, met
         y_base = space.forward(torch.from_numpy(ex_p).to(device), dequant=False)
     cond_t = (torch.cat([y_lf, y_base], dim=1) if y_base is not None else y_lf) if cond else None
     v_fn = make_v_fn(net, cond_t, amp_dtype)
+    if lowk_guide is not None:
+        assert full_box, "lowk_guide needs full_box"
+        v_fn = make_lowk_guided(v_fn, y_lf, lowk_guide, lbox)
     outs, outs_model = [], []
     for d in range(n_draws):
         g = torch.Generator(device=device).manual_seed(int(seed) * 1_000_003 + d)

@@ -1,0 +1,761 @@
+% =====================================================================
+% Section 7: Flow+GAN (flow matching started from the GAN) + ablation summary
+% Self-contained. \input{section7_flowgan} from main.tex after \input{section6_srs}.
+% Needs the packages main.tex already loads (booktabs, algorithm, algpseudocode,
+% listings, xcolor, graphicx). Figures live in figures_cmass/.
+% Numbers (updated 2026-09-28, see research_scratch_5.md): summary cross-fid from
+% logs/3248394_seedxfid.log (nde_v2, 8 seeds for the main arms) and
+% logs/3200801_seedxfid.log (4-seed ablation rows); field cross-fid from
+% logs/3248260_fieldev.log (Flow+GAN, 40 epochs), logs/3203212_fieldev.log (20 epochs)
+% and the other *_fieldev.log files; scale-by-scale from scratch/why/coh.py
+% (COH_SPLIT=test, 200 test boxes); posterior shifts from scratch/why/post_diag_any.py
+% (logs/3249151_postdiag.log, logs/3251464_postdiag.log); PQMass, bispectrum and halo
+% counts from logs/*_tier1.log; calibration from logs/3251512_spread.log; figures from
+% flow_matching/plot_sec7.py. LR here is CHARM (section6_srs.tex calls it FastPM,
+% which is wrong).
+% =====================================================================
+
+\definecolor{ablgood}{HTML}{1B7F1B}
+\newcommand{\abgood}[1]{\textcolor{ablgood}{\textbf{#1}}}
+
+\section{Flow+GAN: Flow Matching Started from the GAN}
+\label{sec:flowgan}
+
+This section documents the third model in this work at the same level of detail
+as \S\ref{sec:srs}. \S\ref{sec:srs} corrects the LR halo count field with a
+styled GAN. The GAN makes the field look like HR, but it is deterministic, and
+it biases the summary-level cosmology posterior. Here we keep that GAN and add a
+conditional \textbf{flow-matching} model on top of it. The flow starts from the
+GAN's output plus noise and learns to turn it into a sample of the HR field. We
+call the combined model \textbf{Flow+GAN}. The section ends with a table of
+every model and ablation we ran on this data (\S\ref{sec:flowgan-ablations}).
+
+\paragraph{Goal.} The goal is the same as in \S\ref{sec:srs}. At inference the
+model sees only the cheap LR field and must produce an SR field that behaves like
+HR. We grade it the same way: a posterior trained on SR fields is applied to HR
+fields, and we measure how far its answer is from a posterior trained on HR
+(cross-fidelity KL). HR is used only for training and grading.
+
+\paragraph{Why a new model: what the GAN and a plain flow get wrong.} Two
+findings from the previous section and its follow-ups motivate this design.
+\begin{itemize}
+  \item \textbf{The GAN is deterministic and tilts the power spectrum.} Its
+  learned noise strength is about $2\times10^{-4}$, so ten noise draws give the
+  same field. Its $L_1$ term pulls each voxel toward the conditional median.
+  This shrinks the large-scale contrast (about $5\%$ less power at $k<0.06\,h\,\mathrm{Mpc}^{-1}$)
+  and adds $1$ to $3\%$ power at high $k$. A posterior reads this tilt as a
+  shift in $\sigma_8$: on HR test boxes the GAN-trained posterior's $\sigma_8$ mean
+  is off by about one HR posterior width. That is why the deployed GAN's summary
+  cross-fidelity KL ($0.202$) is worse than raw LR ($0.049$). One fixed per-$k$
+  calibration curve on the GAN's training $P(k)$ brings it to $0.068$, which
+  shows the problem is this tilt, not missing information.
+  \item \textbf{A plain flow samples, but loses the large scales.} A flow that
+  starts from pure Gaussian noise (``Flow'' below) has no $\sigma_8$ bias and
+  reaches $0.087$. But it rebuilds every scale from noise, including the largest
+  ones, which LR already gets right. Its large-scale power scatters more from box
+  to box than LR's. Its coherence with HR at $k\approx0.125$ falls below LR's.
+  Its predictions are also too narrow: HR usually falls outside the spread of its
+  draws (spread-skill ratio $0.20$, ideal $1$).
+\end{itemize}
+Flow+GAN takes the part each model gets right. The GAN supplies the large-scale
+structure and a best guess. The flow adds only what the best guess cannot
+predict, and it adds it as a sample, not as a mean. This follows residual
+diffusion for downscaling (CorrDiff, Mardani et al.\ 2023, arXiv:2309.15214),
+stochastic flow matching for super-resolution (Fotiadis et al.\ 2024,
+arXiv:2410.19814), and stochastic interpolants with a data-dependent start
+(Albergo et al.\ 2023, arXiv:2310.03725).
+
+\paragraph{Terminology.} \textbf{GAN} means the deployed generator of
+\S\ref{sec:srs}: Arm A (pad $0$), power-spectrum loss off, trained with correct
+cosmology labels, run at the fiducial cosmology (tag \texttt{Afixfid}).
+\textbf{Flow} means the pure-noise flow matcher trained on $64^3$ patches (tag
+\texttt{fm\_gauss\_nodq}). \textbf{Flow+GAN} is the model of this section. As in
+\S\ref{sec:srs}, we use LR/LF and HR/HF interchangeably.
+
+\subsection{Data Preprocessing}
+\textit{Source: \texttt{cmass-ili}; loaders \texttt{flow\_matching/data.py}
+(\texttt{FullBoxDataset}), model space \texttt{flow\_matching/space.py}.}
+
+\paragraph{Input.} The data is the same as in \S\ref{sec:srs}: $2000$ paired
+halo count grids of $128^3$ cells on a periodic $1000\,h^{-1}\mathrm{Mpc}$ box at
+$z=0.5$, with LR from CHARM and HR from Quijote N-body, and the same
+$1600/200/200$ train/validation/test split. One extra input is new. Before
+training, we run the GAN once on every one of the $2000$ LR boxes, at the
+fiducial cosmology, and store its output (\texttt{sr\_fields/Afix\_fiducial}).
+The GAN is frozen from here on; it is not trained further.
+
+\paragraph{Model space.} The flow works on a standardised log count,
+\begin{equation}
+  y = \frac{\log(1+n) - \mu}{s}, \qquad
+  n = \mathrm{round}\big(\exp(s\,y+\mu) - 1\big) \ \ \text{clamped to } [0, 200],
+  \label{eq:fg-space}
+\end{equation}
+where $\mu=0.152$ and $s=0.359$ are the mean and standard deviation of
+$\log(1+n_\text{HR})$ over $50$ training boxes. The LR field, the GAN field and
+the HR target all use this same map. We do \emph{not} dequantise (add uniform
+noise to the integer counts before the log). An earlier flow that did so
+(\texttt{fm\_gauss}) needed a floor decoder, and noise near the empty-cell
+boundary made spurious halos: about $9\%$ too many halos, and a summary KL of
+$0.244$. The rounding decoder in Eq.~\ref{eq:fg-space} does not have this bias.
+Power spectra are computed exactly as in \S\ref{sec:srs}, on the physical-count
+overdensity $\delta = n/\bar n - 1$ with the per-box mean.
+
+\subsection{Data Pipeline (full box, no patches)}
+\textit{Located in: \texttt{flow\_matching/data.py},
+\texttt{flow\_matching/augment.py}, \texttt{flow\_matching/train\_fm.py}.}
+
+Unlike the GAN and the earlier flows, Flow+GAN is trained and sampled on the
+\textbf{whole $128^3$ box at once}. The patch pipeline of \S\ref{sec:srs} cuts
+each box into eight $64^3$ cores. For a model that draws fresh noise per patch,
+this matters: each patch gets its own noise. Modes longer than a patch are then
+re-drawn independently in each patch, and the circular padding treats a patch as
+periodic when it is not. Sampling the old patch-trained flow on the full box
+already raised its coherence with HR at $k=0.125$ from $0.36$ to $0.67$. The
+velocity network is fully convolutional with circular padding, so it runs on
+$128^3$ without change, and the box is truly periodic, so circular padding is
+exact.
+
+Each training item is one box: the LR counts, the HR counts and the GAN output,
+all $128^3$. Two augmentations are applied identically to all three fields:
+\begin{itemize}
+  \item \textbf{Random periodic shift.} The three fields are rolled by the same
+  random offset along each axis. Because the box is periodic this is an exact
+  symmetry, and it stops the network from learning fixed positions.
+  \item \textbf{Cube symmetries.} One of the $48$ rotations and reflections of
+  the cube (\texttt{--aug full48}).
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{Notation for the Flow+GAN pipeline.}
+\label{tab:fg-notation}
+\begin{tabular}{llp{7.0cm}}
+\toprule
+Symbol & Value & Meaning \\
+\midrule
+$N$ & $128$ & box side in voxels (the model sees the whole box) \\
+$y_\text{LR},\,y_\text{GAN},\,y_\text{HR}$ & $(1,128^3)$ & LR, GAN and HR fields in model space (Eq.~\ref{eq:fg-space}) \\
+$\sigma_z$ & $0.920$ & RMS of $y_\text{HR}-y_\text{GAN}$ over $50$ training boxes ($64^3$ patches) \\
+$t$ & $[0,1]$ & flow time; $t{=}0$ is the noisy GAN field, $t{=}1$ is HR \\
+$x_t$ & $(1,128^3)$ & point on the straight path between source and target \\
+$v_\phi$ & $17.4$M params & velocity network (3D UNet) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Model: Input/Output Specification}
+\textit{Implementation: \texttt{flow\_matching/interpolant.py}
+(\texttt{Interpolant}, source \texttt{gan\_white}),
+\texttt{flow\_matching/unet3d.py}.}
+
+\paragraph{The path.} Flow matching learns a velocity field that carries a
+\emph{source} sample $x_0$ to a \emph{target} sample $x_1$ along a straight line.
+For Flow+GAN the source is the GAN's field plus white noise at the size of the
+GAN's typical error, and the target is HR:
+\begin{equation}
+  x_0 = y_\text{GAN} + \sigma_z\,\boldsymbol\epsilon,\quad
+  \boldsymbol\epsilon\sim\mathcal N(0,I), \qquad
+  x_1 = y_\text{HR}, \qquad
+  x_t = (1-t)\,x_0 + t\,x_1 .
+  \label{eq:fg-path}
+\end{equation}
+The velocity along this line is constant, $x_1-x_0$. The network is trained to
+predict it:
+\begin{equation}
+  \mathcal L_\text{FM} \;=\; \mathbb E_{t,\,\boldsymbol\epsilon,\,\text{box}}
+    \big\lVert v_\phi\big(x_t,\,t,\,[y_\text{LR},\,y_\text{GAN}]\big) - (x_1 - x_0)\big\rVert_2^2 ,
+  \qquad t\sim\mathcal U[0,1].
+  \label{eq:fg-loss}
+\end{equation}
+This is the only loss. There is no adversarial term, no $L_1$ term and no
+power-spectrum term.
+
+\paragraph{Why start from the GAN.} With a pure-noise source ($x_0\sim\mathcal
+N(0,I)$) the flow must create every scale, including the large scales that LR
+and the GAN already get right. Starting at the GAN field means the flow's job is
+only the residual $y_\text{HR}-y_\text{GAN}$, whose size is $\sigma_z$. The noise
+$\sigma_z\boldsymbol\epsilon$ is what makes the model stochastic: with
+$\sigma_z=0$ the flow would be a deterministic map and could return only one
+field per LR box, which is the GAN's failure again. The noise is white, so it
+has little power at large scales, and the large-scale modes of the start point
+are essentially the GAN's.
+
+\paragraph{Conditioning.} The network sees the current state $x_t$ and two
+conditioning channels, the LR field and the GAN field, concatenated as input
+channels ($3$ input channels in total). It does \emph{not} see the cosmology
+vector: the flow is $\theta$-independent. The only $\theta$ in the pipeline is
+the fixed fiducial value given to the frozen GAN, so no per-box cosmology can
+leak into the SR fields.
+
+\begin{table}[t]
+\centering
+\caption{Tensors consumed/produced by the velocity network for one box (batch
+dimension omitted).}
+\label{tab:fg-io}
+\begin{tabular}{lll}
+\toprule
+Symbol & Shape & Meaning \\
+\midrule
+$x_t$ & $(1,128,128,128)$ & current state on the path (Eq.~\ref{eq:fg-path}) \\
+$y_\text{LR}$ & $(1,128,128,128)$ & LR field, model space (conditioning) \\
+$y_\text{GAN}$ & $(1,128,128,128)$ & frozen GAN output, model space (conditioning and start point) \\
+$t$ & scalar & flow time, sinusoidal embedding \\
+$v_\phi(\cdot)$ & $(1,128,128,128)$ & predicted velocity \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Velocity network.} $v_\phi$ is a 3D UNet with $17.4$M parameters.
+\begin{enumerate}
+  \item Every convolution is $3{\times}3{\times}3$ with circular padding, so the
+  network is exactly shift-equivariant on the periodic box.
+  \item Four levels at full, $1/2$, $1/4$ and $1/8$ resolution with channel
+  widths $32\cdot(1,2,4,4)$, two residual blocks per level, GroupNorm, and one
+  self-attention block at the coarsest level for global context.
+  \item The time $t$ enters through a sinusoidal embedding and an MLP that sets a
+  per-channel scale and shift after each GroupNorm (FiLM).
+  \item The last convolution is initialised to zero, so the initial velocity is
+  about $0$.
+\end{enumerate}
+Training keeps an exponential moving average (EMA, decay $0.999$) of the weights;
+validation and sampling use the EMA weights.
+
+\subsection{Training Step}
+\textit{Located in: \texttt{flow\_matching/train\_fm.py}.}
+
+\begin{algorithm}[H]
+\caption{Flow+GAN training step (one box)}
+\label{alg:fg-train}
+\begin{algorithmic}[1]
+\Require LR counts $\mathbf L$, HR counts $\mathbf H$, frozen GAN output $\mathbf G$ (all $128^3$), $\sigma_z$
+\State draw one random periodic shift and one of $48$ cube symmetries; apply both to $\mathbf L,\mathbf H,\mathbf G$
+\State $y_\text{LR},y_\text{HR},y_\text{GAN}\gets$ Eq.~\ref{eq:fg-space} applied to $\mathbf L,\mathbf H,\mathbf G$
+\State $\boldsymbol\epsilon\sim\mathcal N(0,I)$, \ $t\sim\mathcal U[0,1]$
+\State $x_0\gets y_\text{GAN}+\sigma_z\boldsymbol\epsilon$, \ $x_t\gets(1-t)x_0+t\,y_\text{HR}$
+\State $\mathcal L\gets\big\lVert v_\phi(x_t,t,[y_\text{LR},y_\text{GAN}])-(y_\text{HR}-x_0)\big\rVert^2$ \Comment{mean over voxels}
+\State update $\phi$ (AdamW, linear warm-up $500$ steps, grad-clip $1$, bf16); update EMA
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Validation and checkpoint selection.} After each epoch we generate
+$2$ draws for each of the first $16$ validation boxes ($16$ Heun steps) and
+compute, in $\log(1+n)$ space: the $L_1$ error per voxel, the fair
+\textbf{CRPS} of the $2$-draw ensemble, the spread between draws, the
+total-count error, and the $P(k)$ RMS against HR. For $K$ draws $s_1,\dots,s_K$
+and the true value $h$, the per-voxel fair CRPS is
+\begin{equation}
+  \mathrm{CRPS} = \frac1K\sum_{i}|s_i-h| - \frac{1}{2K(K-1)}\sum_{i\neq j}|s_i-s_j| .
+  \label{eq:fg-crps}
+\end{equation}
+The first term rewards draws close to HR; the second rewards draws that differ
+from each other. So CRPS, unlike $L_1$, does not favour a blurred mean field.
+\texttt{best.pt} is the epoch with the lowest validation CRPS. We fixed this rule
+before training. $P(k)$ is only a check: it is never trained on and never used
+to select.
+
+\subsection{Inference}
+\textit{Located in: \texttt{flow\_matching/sample\_fm.py},
+\texttt{flow\_matching/common.py} (\texttt{generate\_box}).}
+
+For one box: run the frozen GAN on LR (already stored), build the start point
+$x_0$, integrate the learned velocity from $t=0$ to $t=1$ with Heun's
+second-order method, and map back to counts. The noise is seeded by the box index
+and draw number, so every output can be reproduced.
+
+\begin{algorithm}[H]
+\caption{Flow+GAN inference (one box, one draw)}
+\label{alg:fg-infer}
+\begin{algorithmic}[1]
+\Require LR box $\mathbf L$, GAN output $\mathbf G$, trained $v_\phi$ (EMA), $\sigma_z$, steps $S{=}32$, seed
+\State $y_\text{LR},y_\text{GAN}\gets$ Eq.~\ref{eq:fg-space}; \ $x\gets y_\text{GAN}+\sigma_z\boldsymbol\epsilon$ \Comment{seeded $\boldsymbol\epsilon$}
+\For{$i=0,\dots,S-1$} \Comment{$t_i=i/S$, $\Delta t = 1/S$}
+  \State $v_0\gets v_\phi(x,t_i,[y_\text{LR},y_\text{GAN}])$
+  \If{$i<S-1$}
+    \State $v_1\gets v_\phi(x+\Delta t\,v_0,\,t_{i+1},[y_\text{LR},y_\text{GAN}])$; \ $x\gets x+\tfrac12\Delta t\,(v_0+v_1)$ \Comment{Heun}
+  \Else
+    \State $x\gets x+\Delta t\,v_0$ \Comment{Euler on the last step}
+  \EndIf
+\EndFor
+\State \Return $\mathrm{round}\big(\exp(s\,x+\mu)-1\big)$, clamped to $[0,200]$ \Comment{integer counts}
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{No stitching.} Because the whole box is generated at once, there are
+no cores, no halo and no seams. The stitching step of \S\ref{sec:srs} does not
+apply.
+
+\subsection{Evaluation}
+\label{sec:fg-eval}
+\textit{Located in: \texttt{evaluate.py}, \texttt{inference/nde.py},
+\texttt{analysis/seed\_xfid\_check.py}, \texttt{eval\_field\_crossfid.py},
+\texttt{scratch/why/coh.py}, \texttt{flow\_matching/plot\_sec7.py}.}
+
+We use the metrics of \S\ref{sec:srs-eval}: the power spectrum, the transfer
+$T(k)=P_X/P_\text{HR}$, the cross-coherence $r(k)$ with HR
+(Eq.~\ref{eq:srs-Tr}), and cross-fidelity KL (Eq.~\ref{eq:srs-kl}) at two levels.
+One thing changed in the summary-level protocol, so the numbers below are not
+directly comparable to Table~\ref{tab:srs-corrected}:
+\begin{itemize}
+  \item \textbf{Summary level (protocol v2).} The NDE input is $\log_{10}P(k)$ in
+  $29$ bins. The three lowest of the original $32$ bins contain no Fourier modes,
+  and we now drop them. We train $8$ NDE seeds for each of the main sources (HR,
+  LR, GAN, Flow and every Flow+GAN checkpoint) and $4$ for the other ablations.
+  For seed $s$ we compare $q_X^{(s)}$ with $q_\text{HR}^{(s)}$ on the $200$ HR test
+  boxes and report the mean $\pm$ standard deviation over seeds. The HR floor is
+  the KL between independently trained HR posteriors. This per-seed protocol is
+  stricter than the ensemble protocol of \S\ref{sec:srs-correction}: LR is $0.049$
+  here versus $0.032$ there. The ranking of the GAN arms is the same under both.
+  \item \textbf{Field level.} Unchanged from \S\ref{sec:srs-correction}: a 3D CNN
+  posterior on the full box, $3$ CNN seeds trained on SR, evaluated on HR test
+  boxes against $6$ HR-trained reference CNNs. The same $8$ LR CNNs and $6$ HR
+  CNNs are reused for every arm.
+\end{itemize}
+
+\subsection{Best-Run Configuration}
+\textit{Run script: \texttt{scratch/why/train\_v2\_1gpu.slurm} (resumes automatically
+from \texttt{last.pt}, so the same script ran epochs $0$ to $19$ and $20$ to $39$); checkpoint
+\texttt{models/Flow+GAN/best\_crps40\_epoch39.pt}; sampling \texttt{scratch/why/gen\_v2.slurm}.}
+
+\begin{lstlisting}[language=bash]
+--source gan_white                        # python -m flow_matching.train_fm
+--extra-dir sr_fields/Afix_fiducial     # frozen GAN output: start point + 2nd cond channel
+--full-box --roll --aug full48          # whole periodic box, random shift + 48 symmetries
+--no-dequant                            # round decoder
+--base-ch 32 --ch-mult 1,2,4,4 --attn-levels 3    # 17.4M-param UNet
+--lr 1e-4 --warmup 500 --ema 0.999 --grad-clip 1.0 --amp bf16
+--epochs 40 --select crps --val-max-sims 16 --val-draws 2 --val-steps 16
+# sampling: --steps 32 --method heun (full box, EMA weights, seeded per box)
+\end{lstlisting}
+
+The run used one GH200 GPU (about $13.5$ minutes per epoch, batch of one box).
+Epochs are numbered from $0$, as in the training log. We first stopped the run
+after $20$ epochs, because validation CRPS had been flat since epoch $11$; that
+run's CRPS-best checkpoint was epoch $15$. The validation $P(k)$ error was still
+falling, so we resumed the same run, with the same recipe, weights, EMA and optimizer state,
+to the planned $40$ epochs. Before looking at any test result we fixed which
+checkpoints to report: the CRPS-best one (epoch $38$, the one we use below) and the
+final one (epoch $39$). Validation at those epochs:
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+model & $L_1$/voxel & CRPS & spread & count error & $P(k)$ RMS \\
+\midrule
+Flow+GAN, epoch 15 (first $20$ epochs) & $0.146$ & $0.0749$ & $0.071$ & $+0.2\%$ & $0.059$ \\
+Flow+GAN, epoch 38 (CRPS-best of $40$) & $0.144$ & $\mathbf{0.0740}$ & $0.070$ & $-1.6\%$ & $\mathbf{0.052}$ \\
+Flow+GAN, epoch 39 (final) & $0.143$ & $\mathbf{0.0740}$ & $0.069$ & $-1.5\%$ & $0.053$ \\
+Flow from noise, full box (control) & $0.195$ & $0.100$ & -- & $+3.2\%$ & $0.084$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The control row is the same recipe with a pure-noise source instead of the GAN,
+read at epoch $7$ to $8$ for comparison (its later epochs were unstable). Flow+GAN
+is better on every validation metric. The second $20$ epochs improve CRPS only
+slightly ($0.0749\to0.0740$, flat from epoch $30$), but they reduce the $P(k)$ error
+($0.059\to0.052$), even though $P(k)$ is not in the loss. The validation count error
+is measured on only $16$ boxes and moves by about $1\%$ from epoch to epoch.
+
+\subsection{Results}
+\label{sec:fg-results}
+
+\paragraph{1. Power spectrum: the tilt is gone.} Figure~\ref{fig:fg-pk} and
+Table~\ref{tab:fg-scale} compare the power spectrum and cross-coherence of LR,
+the GAN, the Flow and Flow+GAN against HR. Flow+GAN's median power is within
+$1.4\%$ of HR at every scale ($0.986$ to $1.009$). The median transfer deviates
+from $1$ by $1.1\%$ RMS, against $2.7\%$ for raw LR, $4.4\%$ for the GAN and
+$6.1\%$ for the Flow. The GAN's pattern (too little power at large scales, too
+much at small scales) is removed, and so is the Flow's $3$ to $4\%$ deficit at
+most scales. The cross-coherence with HR is above LR at every scale except the
+largest ($r=0.76$ vs $0.51$ at $k\approx0.125$, $0.34$ vs $-0.13$ at
+$k\approx0.35$). It stays below the GAN's, which is expected: a sampler draws
+the unpredictable small-scale structure fresh, while the GAN returns its
+single best guess.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures_cmass/pk_panel_box_flowgan.png}
+\caption{Full-box diagnostic on $100$ validation boxes. Flow+GAN has no
+test-split fields yet, and the first $16$ validation boxes (in sorted order)
+were used for checkpoint selection, so we use the next $100$.
+\textbf{Left:} median $P(k)$ of HR, LR, GAN, Flow and Flow+GAN.
+\textbf{Middle:} transfer $T(k)=P_X/P_\text{HR}$, median, with the 16 to 84
+percentile band for LR and Flow+GAN; the legend gives the RMS deviation of the
+median from $1$. The GAN (orange) is low at large scales and high at small
+scales; the Flow (green) is low at all scales; Flow+GAN (blue) stays on $1$.
+\textbf{Right:} cross-coherence $r(k)$ with HR. Flow+GAN is above LR from
+$k\approx0.05$ onward and below the deterministic GAN.}
+\label{fig:fg-pk}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Scale by scale, the first $100$ validation boxes, in wide $k$ bands
+centred on the listed values. $P/P_\text{HR}$: median power
+ratio to HR ($1$ is right). Scatter: box-to-box standard deviation of that ratio
+(LR is the reference). $r$: median cross-coherence with HR ($1$ is best).}
+\label{tab:fg-scale}
+\small
+\begin{tabular}{l cccc cc cccc}
+\toprule
+ & \multicolumn{4}{c}{$P/P_\text{HR}$ median} & \multicolumn{2}{c}{scatter} & \multicolumn{4}{c}{$r$ with HR} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-7}\cmidrule(lr){8-11}
+$k$ [$h\,\mathrm{Mpc}^{-1}$] & $0.013$ & $0.042$ & $0.125$ & $0.35$ & $0.013$ & $0.125$ & $0.013$ & $0.042$ & $0.125$ & $0.35$ \\
+\midrule
+LR (raw)  & $1.009$ & $1.017$ & $1.037$ & $1.007$ & $\mathbf{0.20}$ & $0.34$ & $\mathbf{0.975}$ & $0.908$ & $0.508$ & $-0.126$ \\
+GAN       & $0.949$ & $0.962$ & $1.010$ & $1.029$ & $\mathbf{0.20}$ & $0.34$ & $0.974$ & $\mathbf{0.944}$ & $\mathbf{0.850}$ & $\mathbf{0.559}$ \\
+Flow      & $1.057$ & $0.970$ & $0.959$ & $0.989$ & $0.40$ & $\mathbf{0.32}$ & $0.907$ & $0.837$ & $0.358$ & $0.062$ \\
+Flow+GAN  & $\mathbf{0.986}$ & $\mathbf{1.004}$ & $\mathbf{0.998}$ & $\mathbf{1.009}$ & $0.29$ & $0.35$ & $0.964$ & $0.921$ & $0.760$ & $0.339$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{2. Cross-fidelity: Flow+GAN matches LR at the summary level and stays near the floor at the field level.}
+Figure~\ref{fig:fg-crossfid} and Table~\ref{tab:fg-crossfid} give the goal
+metric. At the summary level the $40$-epoch Flow+GAN reaches $0.047\pm0.008$,
+against $0.049\pm0.010$ for raw LR. Compared seed by seed (same NDE seed, same HR
+reference posterior), the difference from LR averages $-0.001$. It is the first
+SR model that is not worse than LR at the summary level: the GAN is at $0.202$
+and the Flow at $0.087$. The final checkpoint (epoch $39$) gives $0.055\pm0.011$,
+also equal to LR within noise. At the field level Flow+GAN reaches $0.027\pm0.011$,
+close to the HR floor ($0.019$), while the LR-trained CNN posterior does not
+transfer reliably ($0.47\pm0.78$).
+
+Two cautions apply. First, epochs $38$ and $39$ are neighbouring checkpoints of one
+run, yet their summary KLs differ by $0.008$, about one seed standard deviation.
+So the fair claim is that Flow+GAN is equal to LR within noise, not that it beats
+LR. Second, the $20$-epoch model (epoch $15$) was at $0.065\pm0.011$. The
+improvement from longer training is therefore real but modest, and it is of the
+same order as the checkpoint-to-checkpoint noise.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{figures_cmass/crossfid_flowgan.png}
+\caption{Cross-fidelity KL to HR (log scale, lower is better), posterior trained
+on source $X$ and applied to the $200$ HR test boxes. Dashed: HR-to-HR floor.
+Flow+GAN is the $40$-epoch model (CRPS-best checkpoint).
+\textbf{Left:} summary level ($P(k)$ NDE, protocol v2, mean $\pm$ std over $8$
+seeds). Flow+GAN ($0.047$) equals raw LR ($0.049$); the GAN is at $0.202$ and the
+Flow at $0.087$. \textbf{Right:} field level (3D CNN). All three SR models are
+near the floor, Flow+GAN ($0.027$) closest; LR does not transfer reliably.}
+\label{fig:fg-crossfid}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Cross-fidelity KL to HR, lower is better. Summary: protocol v2, mean
+$\pm$ std over $8$ NDE seeds, $200$ HR test boxes. Field: mean $\pm$ std over
+HR-reference $\times$ SR-replicate pairs. Best SR value per column in bold.}
+\label{tab:fg-crossfid}
+\begin{tabular}{lcc}
+\toprule
+source & summary $P(k)$ & field (CNN) \\
+\midrule
+LR (raw, control) & $0.049\pm0.010$ & $0.471\pm0.782$ \\
+GAN (deployed)    & $0.202\pm0.038$ & $0.037\pm0.014$ \\
+Flow (noise start, patches) & $0.087\pm0.027$ & $0.029\pm0.008$ \\
+Flow+GAN, epoch 15 ($20$-epoch run) & $0.065\pm0.011$ & $\mathbf{0.024\pm0.009}$ \\
+Flow+GAN, epoch 38 (CRPS-best of $40$) & $\mathbf{0.047\pm0.008}$ & $0.027\pm0.011$ \\
+Flow+GAN, epoch 39 (final) & $0.055\pm0.011$ & $0.027\pm0.015$ \\
+\midrule
+HR floor          & $0.031\pm0.009$ & $0.019$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{3. Why it works: the posterior shifts.} Table~\ref{tab:fg-s8}
+measures directly how each SR-trained posterior differs from the HR-trained one.
+For each HR test box and seed we take the SR-trained posterior mean minus the
+HR-trained posterior mean, in units of the HR posterior's standard deviation. We
+report the mean over boxes (bias) and the standard deviation over boxes (scatter),
+averaged over the $8$ seeds, for the two parameters the $P(k)$ posterior
+constrains best, $\Omega_m$ and $\sigma_8$. The GAN's problem is a single one:
+its $\sigma_8$ is biased by a full posterior width. After $20$ epochs Flow+GAN has
+no such bias beyond LR's own ($+0.23$ vs $+0.18$), but its $\Omega_m$ scatter is
+larger than LR's ($0.22$ vs $0.17$). After $40$ epochs the $\sigma_8$ bias is gone
+($-0.01$) and the $\Omega_m$ scatter has dropped to $0.18$, close to LR. The same
+pattern holds for $n_s$ (scatter $0.34\to0.30$, LR $0.27$). These are the changes
+that close the summary gap. The per-box scatter of $\sigma_8$ was never the
+problem: it is at LR's level for every Flow+GAN checkpoint. The final checkpoint
+(epoch $39$) has a $\sigma_8$ bias of $+0.17$, which is again LR's level, which
+shows how much this quantity moves between neighbouring checkpoints.
+
+\begin{table}[h]
+\centering
+\caption{Shift of the posterior mean on HR test boxes (SR-trained minus
+HR-trained), in units of the HR posterior standard deviation; $200$ boxes
+$\times$ $8$ seeds. Bias is the mean over boxes, scatter the standard deviation
+over boxes. $0$ is ideal for all columns.}
+\label{tab:fg-s8}
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{$\Omega_m$} & \multicolumn{2}{c}{$\sigma_8$} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+source & bias & scatter & bias & scatter \\
+\midrule
+LR (raw)  & $+0.01$ & $\mathbf{0.17}$ & $+0.18$ & $0.38$ \\
+GAN (deployed) & $-0.11$ & $0.18$ & $+1.06$ & $0.52$ \\
+Flow (patches) & $+0.02$ & $0.21$ & $-0.10$ & $0.46$ \\
+Flow+GAN, epoch 15 & $-0.02$ & $0.22$ & $+0.23$ & $0.39$ \\
+Flow+GAN, epoch 38 & $+0.03$ & $0.18$ & $\mathbf{-0.01}$ & $0.37$ \\
+Flow+GAN, epoch 39 & $+0.01$ & $0.18$ & $+0.17$ & $\mathbf{0.36}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{4. Distribution checks beyond the posterior.} We also ran the
+field-level checks of \S\ref{sec:srs} on the $40$-epoch model.
+\begin{itemize}
+  \item \textbf{PQMass} ($200$ validation boxes, one-point count histogram, as in
+  \S\ref{sec:srs}). Flow+GAN at epoch $38$ gives $\chi^2/\text{dof}=1.20$, against
+  $0.83$ for LR and $2.22$ for the GAN, so its one-point distribution is close to
+  statistically indistinguishable from HR. The $20$-epoch model failed this test
+  ($3.59$). We traced that failure to the flow itself: at a fixed total halo count
+  it produced about $2\%$ too few cells with two halos and too many with three, and
+  $3$ times too many cells with more than $20$ halos. The decoder was not the cause:
+  rounding in log space instead of count space changed nothing ($3.65$), and
+  thresholds matched to HR's histogram on training boxes moved the total count by
+  $9\%$ on validation boxes. After $40$ epochs the excess of very dense cells is
+  $1.6\times$ HR's and a small integer-level wobble remains ($0.86$ to $0.98$ of HR
+  in the $2$ to $4$ halo bins), but its sign flipped relative to epoch $15$. We read
+  it as training noise near the integer lattice, not as a fixed feature. One
+  caveat applies when reading any PQMass value here: LR and HR boxes share initial
+  conditions, so the two samples are paired rather than independent, and the test
+  under-rejects (LR's $p$-values pile up near $1$). A failure is therefore real,
+  and a pass is somewhat generous.
+  \item \textbf{Bispectrum} ($32$ test boxes, equilateral triangles at
+  intermediate $k$). $B/B_\text{HR}=1.106$, the same as LR ($1.112$). The
+  $20$-epoch model was at $1.056$. The bispectrum is not an input to either
+  posterior.
+  \item \textbf{Total halo count.} Mean per-box deficit relative to HR $-1.4\%$
+  (LR $-1.9\%$). The robust box-to-box scatter of $\log(N_X/N_\text{HR})$ on the
+  test boxes is $0.022$ for LR, the GAN and Flow+GAN alike ($0.0223$, $0.0229$ and
+  $0.0216$), so the extra $\Omega_m$ scatter of the $20$-epoch model did not come
+  from the total count.
+  \item \textbf{Calibration of draws} ($60$ validation boxes $\times$ $8$ draws).
+  The spread-skill ratio of $P(k)$ is $0.15$ (ideal $1$) at both epoch $15$ and
+  epoch $38$, and the rank histograms are U-shaped at intermediate and high $k$.
+  Different draws for the same LR box differ much less than any one draw differs
+  from HR. The draws should therefore not be used as a calibrated uncertainty.
+  This does not enter the cross-fidelity numbers, which use one draw per box.
+\end{itemize}
+
+\paragraph{5. What did not help.} We tested two more ideas aimed at the
+large-scale modes, and a third is the one from the previous version of this section.
+\begin{itemize}
+  \item \textbf{Low-$k$ guidance during sampling} (\texttt{FGguide}, epoch $15$
+  model). At every integration step we predict the end point
+  $\hat x_1 = x + (1-t)\,v$, pull its Fourier modes toward LR's with a weight that
+  is $1$ below $k_1=0.02$ and falls smoothly (cosine) to $0$ at $k_2=0.05\,h\,\mathrm{Mpc}^{-1}$,
+  and correct the velocity to match. This is a data-consistency step in the spirit
+  of DDNM (Wang et al.\ 2022, arXiv:2212.00490). The $k=0$ mode (total count) is
+  never changed. It did what it was designed to do: the box-to-box scatter of
+  $P/P_\text{HR}$ at $k<0.03$ fell from $0.41$ to $0.35$ (LR $0.30$), and the
+  coherence there rose to LR's. But the summary KL did not move ($0.069\pm0.020$
+  vs $0.065\pm0.011$), and the field KL was unchanged ($0.027$). This showed that
+  the large-scale scatter was not what separated Flow+GAN from LR, which the
+  posterior-shift table then confirmed.
+  \item \textbf{Hard low-$k$ swap keeping the total count} (\texttt{*LK3}). The
+  previous hard swap (replace all modes $k<0.05$ with LR's) also replaced the $k=0$
+  mode, that is the box's total halo count, with LR's. Keeping the model's own
+  count helps every model a little (GAN $0.106\to0.084$, Flow+GAN at epoch $15$
+  $0.088\to0.075$), but the swap still hurts every flow compared with no swap
+  (Flow+GAN at epoch $15$: $0.065\to0.075$; with the original swap the $40$-epoch
+  checkpoints go from $0.047$ and $0.055$ to $0.075$ and $0.072$). The posterior
+  shifts show why: splicing LR's large-scale modes onto the flow's small scales
+  makes the large-to-small-scale power ratio noisier from box to box, and the
+  $\sigma_8$ scatter of the epoch-$15$ model rises from $0.39$ to $0.62$.
+  \item \textbf{Other decoders.} See the PQMass item above.
+\end{itemize}
+
+\subsection{Diagnostic: What is NOT Working}
+
+\paragraph{The draws are under-dispersed.} The spread-skill ratio is $0.15$ and
+did not change with longer training. For each LR box the model produces draws that
+are too similar to each other, given how far each is from HR. For the
+cross-fidelity protocol this does not matter, because we use one draw per box and
+compare distributions over boxes. It would matter for any use of several draws as
+an error bar. Possible remedies, both untested here, are a stochastic (SDE)
+sampler with extra noise and a larger source noise scale at training time.
+
+\paragraph{Checkpoint noise is as large as the remaining effects.} Neighbouring
+checkpoints differ by $0.008$ in summary KL and by $0.17$ posterior widths in
+$\sigma_8$ bias. Any further improvement of that size needs several checkpoints or
+training seeds to be believed.
+
+\paragraph{The hard low-$k$ lock and the low-$k$ guide do not help.} See item 5
+of \S\ref{sec:fg-results}. Both act on the large-scale scatter, which turned out
+not to be the limiting factor.
+
+\paragraph{Open caveats.} (i) One training run and one seed. A second training
+seed would show how stable $0.047$ is; the spread between epochs $38$ and $39$
+suggests about $\pm0.008$. (ii) Boxes $0$ to $15$ of the validation split were used
+for checkpoint selection and are also among the $200$ PQMass boxes. The
+cross-fidelity numbers and Figure~\ref{fig:fg-pk} use only the $200$ test boxes.
+(iii) Flow+GAN inherits the GAN's fiducial-cosmology input. A $\theta$-free GAN (for
+example the scrambled-label model, summary $0.087$) as the start point is
+untested. (iv) The pure-noise full-box control was selected at epoch $2$ by the
+pre-registered CRPS rule and later became unstable. Its numbers ($1.19$ summary,
+$0.046$ field) are therefore pessimistic, and it does not isolate the benefit of
+the GAN start as cleanly as a converged control would.
+
+\subsection{Summary of All Methods and Ablations}
+\label{sec:flowgan-ablations}
+
+Tables~\ref{tab:fg-abl-gan} and~\ref{tab:fg-abl-flow} list every model and
+ablation we trained on this data, what each one changed, and how it did on the
+goal metric. Summary-level numbers all use protocol v2 (\S\ref{sec:fg-eval}), so
+every row in the summary column is directly comparable. Rows marked $^8$ use $8$
+NDE seeds; the others use $4$. The reference points are raw LR at $0.049$ and the
+HR floor at $0.031$. Field-level numbers use the same
+HR reference CNNs throughout (floor $0.019$, LR $0.47$). ``n/r'' means not run.
+Rows with a \abgood{Good} verdict are the results we would keep. The GAN rows
+marked ``scrambled $\theta$'' were trained before the label fix of
+\S\ref{sec:srs-correction}. Their cosmology input was effectively noise, so they
+behave as unconditioned generators.
+
+\begin{table}[p]
+\centering
+\caption{Methods and ablations, part 1: raw baselines, GAN variants
+(\S\ref{sec:srs}) and evaluation-protocol checks. KL to HR, lower is better.
+Summary: protocol v2, mean $\pm$ std over $4$ seeds ($8$ where marked $^8$).
+Field: 3D CNN. Good results highlighted.}
+\label{tab:fg-abl-gan}
+\footnotesize
+\begin{tabular}{p{2.5cm}p{5.3cm}ccp{3.6cm}}
+\toprule
+model (tag) & what changed & summary KL & field KL & verdict \\
+\midrule
+\multicolumn{5}{l}{\textit{Reference points}} \\
+HR floor & HR-trained posterior vs another HR-trained posterior & $0.031\pm0.009^8$ & $0.019$ & best achievable \\
+LR, raw CHARM & no model; posterior trained on LR & $0.049\pm0.010^8$ & $0.471\pm0.782$ & control. Tied with Flow+GAN at summary level; unreliable at field level (2 of 8 CNN seeds fail) \\
+\midrule
+\multicolumn{5}{l}{\textit{GAN, original protocol (with power-spectrum loss)}} \\
+Arm A naive (\texttt{cmassA\_naive}) & pad $0$, $\lambda_\text{pk}{=}2$, select on $P(k)$ RMS; scrambled $\theta$ & $0.153\pm0.043$ & n/r & Bad \\
+Arm B overlap (\texttt{cmassB\_overlap}) & as Arm A with pad $8$ (real neighbour context) & $0.344\pm0.038$ & n/r & Bad, worst GAN \\
+\midrule
+\multicolumn{5}{l}{\textit{GAN, new protocol (power-spectrum loss off, select on $L_1$)}} \\
+No-$P(k)$ Arm A (\texttt{Anopk}) & Arm A with $\lambda_\text{pk}{=}0$; scrambled $\theta$ & $0.087\pm0.012$ & $\mathbf{0.022\pm0.010}$ & \abgood{Good}: best GAN at summary level; field at floor \\
+Lower LR (\texttt{Alowlr}) & \texttt{Anopk} resumed at epoch $15$ with learning rate halved to $5{\times}10^{-5}$ & $0.268\pm0.031$ & n/r & Bad: better $L_1$, worse goal metric \\
+Trim-aware pad (\texttt{Baware}) & pad $8$, loss only on the kept $64^3$ core & $0.152\pm0.019$ & n/r & Bad: padding does not help \\
+Trim-unaware pad (\texttt{Bunaware}) & pad $8$, loss on the whole $80^3$ output & $0.219\pm0.102$ & n/r & Bad: worst padding variant, unstable \\
+\midrule
+\multicolumn{5}{l}{\textit{GAN with correct cosmology labels}} \\
+Deployed GAN (\texttt{Afixfid}) & retrained with correct $\theta$; sampled at fiducial $\theta$ & $0.202\pm0.038^8$ & $0.037\pm0.014$ & Mixed: field near floor, summary $4{\times}$ LR ($\sigma_8$ bias) \\
+Oracle $\theta$ (\texttt{Afixtrue}) & same model, sampled at each box's true $\theta$ (not deployable) & $0.197\pm0.031$ & $0.024\pm0.011$ & Bad at summary level; $\theta$ leak \\
+Loss rebalance, Arm R (\texttt{stage0\_R}) & fine-tune deployed GAN $5$ epochs, $\lambda_\text{rec}$ $2\to0.5$ & $0.167\pm0.023$ & n/r & Mixed: fixes 1-point distribution (PQMass $2.22\to0.75$), summary unchanged \\
+Smoothed $L_1$, Arm S (\texttt{stage0\_S}) & fine-tune with $L_1$ on a $1.5$-voxel Gaussian-smoothed field & n/r & n/r & Bad: failed the screening checks, not taken further \\
+\midrule
+\multicolumn{5}{l}{\textit{Post-hoc $P(k)$ tests on the deployed GAN (diagnostics, not new models)}} \\
+Regenerated (\texttt{AfixRe}) & same model, fields generated again on the new cluster & $0.194\pm0.033$ & n/r & reproduces $0.185$ \\
+Fixed calibration (\texttt{Afixfidcal}) & multiply training $P(k)$ by one fixed per-$k$ curve & $\mathbf{0.068\pm0.010}$ & n/r & \abgood{Good}: proves the GAN's gap is a $P(k)$ tilt \\
+Low-$k$ lock (\texttt{AfixLK2}) & replace modes $k<0.05$ with LR's & $0.106\pm0.031$ & n/r & Partial: halves the $\sigma_8$ bias \\
+Low-$k$ lock, own count (\texttt{AfixLK3}) & as \texttt{AfixLK2} but keep the GAN's own $k{=}0$ mode (total count) & $0.084\pm0.012$ & n/r & Partial: best GAN post-hoc fix after calibration \\
+\midrule
+\multicolumn{5}{l}{\textit{Evaluation protocol}} \\
+NDE $300$ epochs & NDE trained $300$ instead of $100$ epochs (old 32-bin input) & LR $0.067$, GAN $0.217$ & -- & no gain; keep $100$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[p]
+\centering
+\caption{Methods and ablations, part 2: flow-matching models and Flow+GAN.
+Same columns and protocol as Table~\ref{tab:fg-abl-gan}. Unless noted, flows
+are trained on $64^3$ patches with the pure-noise (Gaussian) source. Good
+results highlighted.}
+\label{tab:fg-abl-flow}
+\footnotesize
+\begin{tabular}{p{2.5cm}p{5.3cm}ccp{3.6cm}}
+\toprule
+model (tag) & what changed & summary KL & field KL & verdict \\
+\midrule
+\multicolumn{5}{l}{\textit{Flow matching on patches}} \\
+Flow, dequantised (\texttt{fm\_gauss}) & Gaussian source; uniform dequantisation, floor decoder & $0.244\pm0.107$ & $0.028\pm0.014$ & Bad: spurious halos near empty cells ($+9\%$ count) \\
+Flow (\texttt{fm\_gauss\_nodq}) & no dequantisation, rounding decoder & $0.087\pm0.027^8$ & $0.029\pm0.008$ & \abgood{Good}: no $\sigma_8$ bias; best model before Flow+GAN ($0.074$ with $4$ seeds) \\
+Flow, regenerated (\texttt{fmRe}) & same model, fields generated again & $0.072\pm0.006$ & n/r & reproduces $0.074$ \\
+LR-start flow (\texttt{fm\_lfspec\_nodq}) & source $=$ LR $+$ noise coloured to the residual $P(k)$ & $0.145\pm0.012$ & $0.025\pm0.011$ & Bad at summary level ($\sigma_8$ bias $-0.66$) \\
+Late-$t$ emphasis (\texttt{tlate}) & $t$ drawn from a logit-normal shifted toward $t{=}1$ & n/r & n/r & Bad: $6\%$ too many halos; failed screening \\
+Dense-region weight (\texttt{lw2}) & loss weighted by $1+2\times$ local LR density & n/r & n/r & Bad: large-scale power $0.875$, coherence below LR; failed screening \\
+\midrule
+\multicolumn{5}{l}{\textit{Sampling changes (same patch-trained checkpoints)}} \\
+Full-box sampling (\texttt{fmFull}) & sample the Flow on the whole $128^3$ box instead of $8$ patches & $0.088\pm0.018$ & $0.026\pm0.010$ & Mixed: coherence at $k{=}0.125$ $0.36\to0.67$; KL same within noise \\
+LR-start, full box (\texttt{lfsFull}) & sample \texttt{fm\_lfspec\_nodq} on the full box & $0.119\pm0.008$ & $0.028\pm0.010$ & Bad (better than its patch version, $0.145$) \\
+Low-$k$ lock on flows (\texttt{*LK2}) & replace modes $k<0.05$ with LR's after sampling & $0.163$ to $0.244$ & n/r & Bad: hard cut creates a step in $P(k)$ \\
+Low-$k$ lock, own count (\texttt{fmLK3}) & as \texttt{fmLK2} but keep the flow's own total count & $0.150\pm0.031$ & n/r & Bad \\
+\midrule
+\multicolumn{5}{l}{\textit{Full-box training (this section)}} \\
+Noise start, full box (\texttt{Flow\_noise\_fullbox}) & Gaussian source, trained on full boxes (control for Flow+GAN) & $1.19\pm0.82$ & $0.046\pm0.012$ & Bad; pessimistic (epoch-2 checkpoint, unstable later) \\
+Flow+GAN, $20$ epochs (\texttt{FlowGAN}, epoch 15) & source $=$ frozen GAN output $+\,\sigma_z$ white noise; LR and GAN as conditioning; full box; CRPS selection & $0.065\pm0.011^8$ & $\mathbf{0.024\pm0.009}$ & Good: no GAN $\sigma_8$ bias; fails PQMass ($3.59$) \\
+\textbf{Flow+GAN, $40$ epochs} (\texttt{FGcrps40}, epoch 38) & same run resumed to $40$ epochs; CRPS-best checkpoint & $\mathbf{0.047\pm0.008^8}$ & $0.027\pm0.011$ & \abgood{Good}: equal to LR at summary level, near floor at field level; PQMass $1.20$ \\
+Flow+GAN, final (\texttt{FGfinal40}, epoch 39) & last checkpoint of the same run & $0.055\pm0.011^8$ & $0.027\pm0.015$ & \abgood{Good}: equal to LR within noise; shows checkpoint noise \\
+Flow+GAN $+$ low-$k$ guide (\texttt{FGguide}) & epoch 15; LR's modes imposed smoothly ($k<0.02$, taper to $0.05$) during sampling & $0.069\pm0.020^8$ & $0.027\pm0.006$ & Neutral: large-scale scatter down, KL unchanged \\
+Flow+GAN $+$ low-$k$ lock (\texttt{FlowGANLK2}) & epoch 15; replace modes $k<0.05$ with LR's after sampling & $0.088\pm0.010$ & n/r & Bad \\
+Flow+GAN $+$ lock, own count (\texttt{FlowGANLK3}) & as above, keeping the model's own total count & $0.075\pm0.005$ & n/r & Bad: less harmful, still worse than no lock \\
+Flow+GAN $40$ ep.\ $+$ lock (\texttt{FGcrps40LK}) & epoch 38; original lock & $0.075\pm0.008$ & n/r & Bad \\
+Decoder variants (epoch 15) & round in log space; HR-matched thresholds & -- & -- & Bad: PQMass $3.65$; count $+9\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{What the tables say.} Three results hold across the whole set.
+First, nothing we did to the GAN's architecture or loss (padding, learning rate,
+loss rebalance, conditioning) brought its summary KL below $0.087$. A fixed
+calibration curve did ($0.068$), which showed the gap was a smooth $P(k)$ tilt
+rather than lost information. Second, a flow matcher removes that tilt, but
+started from noise it loses large-scale coherence. Changing its sampling or its
+time and loss emphasis did not fix this. Third, starting the flow from the GAN
+keeps the GAN's large scales and the flow's unbiased small scales. Trained for
+$40$ epochs, Flow+GAN equals raw LR at the summary level ($0.047$ vs $0.049$) and
+stays near the HR floor at the field level ($0.027$ vs $0.019$), where LR is
+unreliable. It is the only model we trained that is at least as good as LR on both
+levels. Post-hoc changes to the large scales (hard lock or smooth guide) never
+helped a flow.
+
+\paragraph{Next step.} The main open issues are the under-dispersed draws and
+the checkpoint noise. The first needs a sampler or training change aimed at
+calibration; the second needs a second training seed. Replacing the
+fiducial-cosmology GAN by a $\theta$-free start point is the remaining design
+question.
+
+\subsection{Files}
+\begin{itemize}\itemsep0pt
+  \item Flow matching package: \texttt{flow\_matching/} (\texttt{README.md} for the
+  full ablation design)
+  \item Model space and decoder: \texttt{flow\_matching/space.py}
+  \item Sources, path, samplers, low-$k$ projection: \texttt{flow\_matching/interpolant.py}
+  (source \texttt{gan\_white} is Flow+GAN)
+  \item Velocity network: \texttt{flow\_matching/unet3d.py}
+  \item Data (patch and full-box, optional GAN channel): \texttt{flow\_matching/data.py};
+  augmentations \texttt{flow\_matching/augment.py}
+  \item Training: \texttt{flow\_matching/train\_fm.py}; run script
+  \texttt{scratch/why/train\_v2\_1gpu.slurm} (multi-GPU:
+  \texttt{scratch/why/train\_v2\_ddp.slurm})
+  \item Generation and validation metrics: \texttt{flow\_matching/common.py};
+  sampling \texttt{flow\_matching/sample\_fm.py}, \texttt{scratch/why/gen\_v2.slurm}
+  \item GAN start fields: \texttt{gen\_sr\_fields.py} (deployed GAN at fiducial
+  $\theta$, \texttt{sr\_fields/Afix\_fiducial})
+  \item Evaluation chain after training: \texttt{scratch/why/post\_v2.sh}
+  (generation, $P(k)$, low-$k$ variants, NDEs, summary and field cross-fidelity)
+  \item Summary cross-fidelity: \texttt{analysis/seed\_xfid\_check.py},
+  \texttt{scripts/crossfid\_reps.slurm}; posteriors in \texttt{runs/patch\_cmass/nde\_v2/}
+  \item Field cross-fidelity: \texttt{train\_field\_cnn.py}, \texttt{eval\_field\_crossfid.py},
+  \texttt{scratch/why/tier3\_seed.slurm}, \texttt{scratch/why/field\_eval.slurm}
+  \item Scale-by-scale power and coherence: \texttt{scratch/why/coh.py}
+  (\texttt{COH\_SPLIT=test}), \texttt{scratch/why/epoch\_trend.py};
+  posterior shifts: \texttt{scratch/why/post\_diag\_any.py};
+  calibration and low-$k$ tests: \texttt{scratch/why/calib.py}, \texttt{scratch/why/lowk.py}
+  (\texttt{nodc} keeps the total count)
+  \item Low-$k$ guide during sampling: \texttt{flow\_matching/common.py}
+  (\texttt{make\_lowk\_guided}), \texttt{sample\_fm.py --lowk-guide 0.02,0.05}
+  \item PQMass, bispectrum, halo counts: \texttt{scratch/why/tier1\_any.slurm};
+  draw calibration: \texttt{scratch/why/gen\_draws.slurm}, \texttt{scratch/why/spread\_any.slurm};
+  decoder study: \texttt{scratch/why/decoder\_study.py}, \texttt{scratch/why/pq\_feat.py}
+  \item Figures in this section: \texttt{flow\_matching/plot\_sec7.py}
+  $\to$ \texttt{figures\_cmass/pk\_panel\_box\_flowgan.png},
+  \texttt{figures\_cmass/crossfid\_flowgan.png}
+  \item Checkpoints: \texttt{models/Flow+GAN/best\_crps40\_epoch39.pt} ($40$ epochs,
+  CRPS-best, used here), \texttt{epoch\_40.pt} (final),
+  \texttt{best\_epoch15\_first20.pt} ($20$-epoch run); SR fields
+  \texttt{sr\_fields/Flow+GAN\_crps40/}, \texttt{Flow+GAN\_final40/}, \texttt{Flow+GAN/}
+  \item Full log of the $40$-epoch study: \texttt{research\_scratch\_5.md}
+\end{itemize}

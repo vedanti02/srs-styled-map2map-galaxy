@@ -30,10 +30,14 @@ def parse_args():
     p.add_argument("--max-sims", type=int, default=0)
     p.add_argument("--full-box", action="store_true", help="sample the whole periodic 128^3 box at once (no patches); "
                    "always on for models trained with --full-box")
+    p.add_argument("--lowk-guide", default="", help="k1,k2 in h/Mpc: pull the predicted end point's modes k<k1 to LR's at "
+                   "every step, cosine taper to k2 (full box only; k=0 untouched)")
     p.add_argument("--extra-dir", default="", help="gan_white models: dir of the corrector output sr_{idx}.npy")
     p.add_argument("--shard", default="0/1", help="i/n: this process takes every n-th box starting at i (parallel jobs)")
     p.add_argument("--decode-shift", type=float, default=0.0,
                    help="dequantised models: n = floor(z - shift); calibrated ~0.07 for fm_gauss (see diag_decoder)")
+    p.add_argument("--save-model-space", action="store_true",
+                   help="also save the continuous model-space output as y_{idx}.npy (float32), for decoder studies")
     p.add_argument("--amp", default="bf16", choices=["none", "bf16"])
     p.add_argument("--no-ema", action="store_true", help="use raw (non-EMA) weights")
     return p.parse_args()
@@ -50,18 +54,25 @@ def main():
     amp_dtype = torch.bfloat16 if (a.amp == "bf16" and dev.type == "cuda") else None
     ds = CountPatchDataset(a.split, pad=0, cache=False, max_sets=a.max_sims)
     print(f"sample: ckpt={a.ckpt} epoch={ck.get('epoch')} {interp} {space} cond={args['cond']} | "
-          f"{len(ds)} {a.split} boxes x {a.n_draws} draws | {a.method} {a.steps} steps | lowk_kc={a.lowk_kc} decode_shift={a.decode_shift}", flush=True)
+          f"{len(ds)} {a.split} boxes x {a.n_draws} draws | {a.method} {a.steps} steps | lowk_kc={a.lowk_kc} lowk_guide={a.lowk_guide or None} full_box={a.full_box or bool(args.get("full_box", False))} decode_shift={a.decode_shift}", flush=True)
     t0 = time.time(); n_done = 0
     si, sn = (int(v) for v in a.shard.split("/"))
     for n, idx in enumerate(ds.ids[si::sn]):
         names = [f"{a.out}/sr_{idx}.npy"] + [f"{a.out}/sr_{idx}_d{k}.npy" for k in range(1, a.n_draws)]
+        if a.save_model_space:
+            names = names + [f"{a.out}/y_{idx}.npy"]
         if all(os.path.exists(f) for f in names):
             continue
         lr, _ = ds.load_boxes(idx)
         ex = np.load(f"{a.extra_dir}/sr_{idx}.npy").astype(np.float32)[None] if a.extra_dir else None
         srs = generate_box(net, space, interp, lr, dev, n_draws=a.n_draws, steps=a.steps, method=a.method,
                            seed=a.base_seed * 7_919 + idx, cond=args["cond"], lowk_kc=a.lowk_kc, amp_dtype=amp_dtype,
-                           decode_shift=a.decode_shift, sde_gamma=a.sde_gamma, full_box=a.full_box or bool(args.get("full_box", False)), extra_counts=ex)
+                           decode_shift=a.decode_shift, sde_gamma=a.sde_gamma, full_box=a.full_box or bool(args.get("full_box", False)), extra_counts=ex,
+                           lowk_guide=tuple(float(v) for v in a.lowk_guide.split(",")) if a.lowk_guide else None,
+                           return_model_space=a.save_model_space)
+        if a.save_model_space:
+            srs, ys = srs
+            np.save(f"{a.out}/y_{idx}.npy", ys[0][0].astype(np.float32))
         for f, sr in zip(names, srs):
             np.save(f, np.clip(sr[0], 0, 255).astype(np.uint8))
         link = f"{a.out}/set{idx}_transformed.npy"
