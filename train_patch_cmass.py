@@ -21,6 +21,25 @@ from data.patch_dataset_cmass import (
 from map2map.models.styled_srsgan import G_correct, D_const
 from analysis.pk_torch import TorchPk
 
+# Quijote LH prior box, param order (Om, Ob, h, ns, s8) -- same bounds used elsewhere in
+# this repo for theta normalization (field_recovery_plot.py, eval_field_crossfid.py,
+# analysis/theta_sensitivity_check.py).
+THETA_LO = torch.tensor([0.10, 0.03, 0.50, 0.80, 0.60])
+THETA_HI = torch.tensor([0.50, 0.07, 0.90, 1.20, 1.00])
+
+
+def normalize_theta(theta, mode):
+    """theta: (..., 5) raw physical cosmology. mode='none' is a no-op (legacy behavior,
+    matches every checkpoint trained before this flag existed). mode='prior' min-max
+    rescales to [0,1] using the Quijote LH prior box, so the 5 params enter the style
+    blocks on a comparable scale instead of their raw, mismatched physical units.
+    """
+    if mode == "none":
+        return theta
+    lo = THETA_LO.to(theta.device, theta.dtype)
+    hi = THETA_HI.to(theta.device, theta.dtype)
+    return (theta - lo) / (hi - lo)
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -45,6 +64,18 @@ def parse_args():
     p.add_argument("--lambda-adv", type=float, default=1.0, help="0 disables the GAN (Arm A pure)")
     p.add_argument("--lambda-rec", type=float, default=2.0)
     p.add_argument("--lambda-pk", type=float, default=2.0)
+    p.add_argument("--lambda-match", type=float, default=0.0,
+                   help="weight for a matching-aware D loss term: D(x_hr, wrong-theta) "
+                        "sampled from the training prior, trained as fake -- alongside the "
+                        "existing D(x_hr, true-theta) real term and D(fake, true-theta) fake "
+                        "term. Without this, D can solve its whole task while ignoring theta "
+                        "entirely, which gives G zero adversarial pressure to depend on "
+                        "cosmology. 0 disables (legacy behavior).")
+    p.add_argument("--theta-norm", default="none", choices=["none", "prior"],
+                   help="none: raw physical theta fed into G/D (legacy, matches every "
+                        "checkpoint trained before this flag existed). prior: min-max "
+                        "normalize theta by the Quijote LH prior box to [0,1] before it "
+                        "hits any style block -- see analysis/theta_sensitivity_check.py.")
     p.add_argument("--rec-smooth-sigma", type=float, default=0.0)
     p.add_argument("--lambda-r1", type=float, default=10.0)
     p.add_argument("--r1-every", type=int, default=16)
@@ -114,7 +145,8 @@ def _pk_pair(fake_model, hr_model, pk, win, transform, scale, nbar):
 
 
 @torch.no_grad()
-def stitched_validation(G, val_ds, pad, pk128, dev, num_blocks, transform, scale, nbar, max_sims):
+def stitched_validation(G, val_ds, pad, pk128, dev, num_blocks, transform, scale, nbar, max_sims,
+                        theta_norm="none"):
     G.eval()
     grid = PATCH + 2 * pad
     nl = build_noise_list(grid, num_blocks, 0, dev)
@@ -125,6 +157,7 @@ def stitched_validation(G, val_ds, pad, pk128, dev, num_blocks, transform, scale
         patches = np.stack([extract_patch(lr, p, pad) for p in range(N_PATCHES)])
         xb = torch.from_numpy(patches).to(dev)
         tb = torch.from_numpy(val_ds.theta[idx]).unsqueeze(0).expand(N_PATCHES, -1).to(dev)
+        tb = normalize_theta(tb, theta_norm)
         fake = crop_interior(G(xb, tb, nl), pad)
         sr_t = torch.from_numpy(stitch_patches(fake.cpu().numpy())).unsqueeze(0).to(dev)  # (1,1,128³)
         hr_t = torch.from_numpy(hr).unsqueeze(0).to(dev)
@@ -160,6 +193,8 @@ def main():
     D = D_const(1, 5, chan_base=args.chan_base_d, num_blocks=args.num_blocks).to(dev)
     opt_g = torch.optim.Adam(G.parameters(), lr=args.lr_g, betas=(args.beta1, args.beta2))
     opt_d = torch.optim.Adam(D.parameters(), lr=args.lr_d, betas=(args.beta1, args.beta2))
+
+    theta_norm = args.theta_norm
 
     pk64 = TorchPk(N=loss_grid, lbox=args.lbox * loss_grid / N_FULL,
                    n_bins=args.n_pk_bins_patch, device=dev)
@@ -198,6 +233,12 @@ def main():
     print(f"G {sum(p.numel() for p in G.parameters())/1e6:.2f}M  D {sum(p.numel() for p in D.parameters())/1e6:.2f}M")
     print(f"train sims {len(train_ds.ids)}  val sims {len(val_ds.ids)}  input {PATCH+2*pad}³  "
           f"patch-batch {args.sims_per_batch*N_PATCHES}  dev {dev}")
+    print(f"theta-norm={theta_norm}  lambda-match={args.lambda_match}")
+
+    # Pool of (raw, physical) training-set theta to draw mismatched cosmology from for the
+    # matching-aware D loss -- sampled from the marginal prior over the whole train split,
+    # not just the current batch, so it works even at --sims-per-batch 1.
+    train_theta_pool = torch.from_numpy(train_ds.theta[train_ds.ids].astype(np.float32))
 
     dstep = 0
     for epoch in range(start, args.epochs):
@@ -206,7 +247,15 @@ def main():
             B = lr_in.shape[0]
             x_lr = lr_in.reshape(B * N_PATCHES, 1, *lr_in.shape[3:]).to(dev, non_blocking=True)
             x_hr = hr_tgt.reshape(B * N_PATCHES, 1, *hr_tgt.shape[3:]).to(dev, non_blocking=True)
-            th = theta.repeat_interleave(N_PATCHES, 0).to(dev, non_blocking=True)
+            th = normalize_theta(theta.repeat_interleave(N_PATCHES, 0).to(dev, non_blocking=True),
+                                 theta_norm)
+
+            dm = None
+            if args.lambda_match > 0:
+                wrong_idx = torch.randint(0, train_theta_pool.shape[0], (B,))
+                th_wrong = normalize_theta(
+                    train_theta_pool[wrong_idx].repeat_interleave(N_PATCHES, 0).to(dev, non_blocking=True),
+                    theta_norm)
 
             dr = df_ = 0.0
             if use_gan:
@@ -215,6 +264,15 @@ def main():
                     fake = crop_interior(G(x_lr, th), loss_crop)
                 lr_real, lr_fake = D(x_hr, th), D(fake, th)
                 loss_d = softplus_loss_real(lr_real) + softplus_loss_fake(lr_fake)
+                if args.lambda_match > 0:
+                    # Matching-aware term (Reed et al. 2016): D also sees the REAL field
+                    # paired with a WRONG cosmology, and must call that fake too. Without
+                    # this, D can achieve perfect real/fake separation while never looking
+                    # at theta, which leaves G with zero adversarial incentive to depend on
+                    # cosmology at all.
+                    lr_mismatch = D(x_hr, th_wrong)
+                    loss_d = loss_d + args.lambda_match * softplus_loss_fake(lr_mismatch)
+                    dm = lr_mismatch.mean().item()
                 if args.lambda_r1 > 0 and dstep % args.r1_every == 0:
                     loss_d = loss_d + 0.5 * args.lambda_r1 * args.r1_every * r1_penalty(D, x_hr, th)
                 loss_d.backward()
@@ -238,12 +296,14 @@ def main():
             opt_g.step()
 
             if (it + 1) % args.log_every == 0:
+                dm_str = f" D(mismatch)={dm:+.2f}" if dm is not None else ""
                 print(f"e{epoch} it{it+1}/{len(loader)}  adv={float(adv):.3f} "
-                      f"rec={rec.item():.4f} pk={float(pk):.4f}  D(r)={dr:+.2f} D(f)={df_:+.2f}",
+                      f"rec={rec.item():.4f} pk={float(pk):.4f}  D(r)={dr:+.2f} D(f)={df_:+.2f}{dm_str}",
                       flush=True)
 
         vl1, vpk = stitched_validation(G, val_ds, pad, pk128, dev, args.num_blocks,
-                                       args.transform, scale, nbar, args.val_max_sims)
+                                       args.transform, scale, nbar, args.val_max_sims,
+                                       theta_norm=theta_norm)
         print(f"epoch {epoch} {time.time()-t0:.1f}s  STITCHED-128 val_L1/vox={vl1:.4f} val_pkRMS={vpk:.4f}", flush=True)
 
         vsel = vpk if args.select == "pk" else vl1     # checkpoint-selection metric
